@@ -32,6 +32,9 @@ class Team(models.Model):
     def __str__(self):
         return f"{self.city} {self.name}"
     
+    def all_games(self):
+        return Game.objects.filter(models.Q(home_team=self) | models.Q(away_team=self))
+    
 class Player(models.Model):
     
     class Position(models.TextChoices):
