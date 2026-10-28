@@ -1,3 +1,5 @@
+from decimal import Decimal
+
 from django.db import models
 from django.db.models import Q
 
@@ -20,6 +22,7 @@ class Drive(models.Model):
     start_quarter = models.PositiveSmallIntegerField()
     start_yardline_100 = models.PositiveSmallIntegerField()
     result = models.CharField(choices=Result.choices, blank=True)
+    espn_id = models.CharField(max_length=20, unique=True, null=True, blank=True)
     
     class Meta:
         ordering = ["game", "number"]
@@ -47,6 +50,7 @@ class Play(models.Model):
     
     drive = models.ForeignKey(Drive, on_delete=models.CASCADE, related_name="plays")
     number = models.PositiveSmallIntegerField()
+    espn_id = models.CharField(max_length=20, unique=True, null=True, blank=True)
     
     quarter = models.PositiveSmallIntegerField()
     clock_seconds = models.PositiveSmallIntegerField()
@@ -56,9 +60,14 @@ class Play(models.Model):
     yardline_100 = models.PositiveSmallIntegerField()
     
     play_type = models.CharField(choices=PlayType.choices)
+    espn_type = models.CharField(max_length=50, blank=True)    # ESPN's original type, e.g. "Pass Reception"
     yards_gained = models.IntegerField(default=0)
     description = models.TextField(blank=True)
-    
+
+    # Score AFTER the play
+    home_score = models.PositiveSmallIntegerField(default=0)
+    away_score = models.PositiveSmallIntegerField(default=0)
+
     is_completion = models.BooleanField(default=False)
     is_touchdown = models.BooleanField(default=False)
     is_interception = models.BooleanField(default=False)
@@ -100,7 +109,7 @@ class Play(models.Model):
         elif self.down == 4:
             suffix = "th"
             
-        return f"Q{self.quarter} {self.down}{suffix} & {self.distance} at {self.yardline_100} - {self.play_type}"
+        return f"Q{self.quarter} {self.down}{suffix} & {self.distance} at {self.yardline_100} - {self.get_play_type_display()}"
     
 class PlayParticipant(models.Model):
     class Role(models.TextChoices):
@@ -120,24 +129,15 @@ class PlayParticipant(models.Model):
     play = models.ForeignKey(Play, on_delete=models.CASCADE, related_name="participants")
     player = models.ForeignKey("league.Player", on_delete=models.PROTECT, related_name="participations")
     role = models.CharField(choices=Role.choices)
-    credit = models.DecimalField(max_digits=2, decimal_places=1, blank=True, default=1.0)
+    credit = models.DecimalField(max_digits=2, decimal_places=1, default=Decimal("1.0"))
+    
 
     class Meta:
         constraints = [
-            models.UniqueConstraint(fields=["play", "player", "role"], name="one_player_per_play"),
+            models.UniqueConstraint(fields=["play", "player", "role"], name="unique_player_role_per_play"),
         ]
 
     def __str__(self):
-        suffix = ""
-        if self.play.down == 1:
-            suffix = "st"
-        elif self.play.down == 2:
-            suffix = "nd"
-        elif self.play.down == 3:
-            suffix = "rd"
-        elif self.play.down == 4:
-            suffix = "th"
-            
         if self.role == self.Role.RECEIVER or self.role == self.Role.PASSER or self.role == self.Role.RUSHER:
             return (f"{self.player} ({self.get_role_display()}) - {self.play} for {self.play.yards_gained} yards")            
-        return (f"{self.player} ({self.gte_role_display()}) - {self.play}")
+        return (f"{self.player} ({self.get_role_display()}) - {self.play}")
