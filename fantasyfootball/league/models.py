@@ -40,7 +40,7 @@ class Player(models.Model):
     
     class Position(models.TextChoices):
         QB = "QB", "Quarterback"
-        WR = "WR", "Wide Reciever"
+        WR = "WR", "Wide Receiver"
         RB = "RB", "Running Back"
         FB = "FB", "Fullback"
         TE = "TE", "Tight End"
@@ -51,7 +51,7 @@ class Player(models.Model):
         DE = "DE", "Defensive End"
         DT = "DT", "Defensive Tackle"
         LB = "LB", "Linebacker"
-        CB = "CB", "Corner  Back"
+        CB = "CB", "Cornerback"
         S = "S","Safety"
         
         K = "K", "Kicker"
@@ -89,7 +89,10 @@ class Game(models.Model):
     home_score = models.PositiveSmallIntegerField(default=0)
     away_score = models.PositiveSmallIntegerField(default=0)
     espn_id = models.CharField(max_length=20, unique=True, null=True, blank=True)
-    
+
+    class Meta:
+        ordering = ["kickoff"]
+
     def __str__(self):
         return f"Week {self.week}: {self.away_team} @ {self.home_team}"
     

@@ -27,4 +27,5 @@ class PlayerAdmin(admin.ModelAdmin):
 @admin.register(Game)
 class GameAdmin(admin.ModelAdmin):
     list_display = ['season', "week", 'home_team', 'away_team', 'home_score', 'away_score', 'status']
+    list_filter = ["season", "week", "status"]
     list_select_related = ["season", "home_team", "away_team"]
