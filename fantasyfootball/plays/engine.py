@@ -32,7 +32,8 @@ def first_down(offense: str, defense: str, yardline_100: int) -> GameState:
         distance=min(10, yardline_100),
         yardline_100=yardline_100,
     )    
-    
+
+
 def next_state(state: GameState, outcome: PlayOutcome) -> Result:
     new_yardline = state.yardline_100 - outcome.yards_gained
     

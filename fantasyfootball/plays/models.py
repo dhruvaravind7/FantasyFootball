@@ -59,6 +59,7 @@ class Play(models.Model):
     yards_gained = models.IntegerField(default=0)
     description = models.TextField(blank=True)
     
+    is_completion = models.BooleanField(default=False)
     is_touchdown = models.BooleanField(default=False)
     is_interception = models.BooleanField(default=False)
     is_fumble_lost = models.BooleanField(default=False)
@@ -100,3 +101,43 @@ class Play(models.Model):
             suffix = "th"
             
         return f"Q{self.quarter} {self.down}{suffix} & {self.distance} at {self.yardline_100} - {self.play_type}"
+    
+class PlayParticipant(models.Model):
+    class Role(models.TextChoices):
+        PASSER = "PASSER", "Passer"
+        RECEIVER = "RECEIVER", "Receiver"
+        RUSHER = "RUSHER", "Rusher"
+        TACKLER = "TACKLER", "Tackler"
+        ASSIST_TACKLER = "ASSIST_TACKLER", "Assist Tackler"
+        INTERCEPTOR = "INTERCEPTOR", "Interceptor"
+        FUMBLER = "FUMBLER", "Fumbler"
+        FUMBLE_RECOVERER = "FUMBLE_RECOVERER", "Fumble Recoverer"
+        KICKER = "KICKER", "Kicker"
+        PUNTER = "PUNTER", "Punter"
+        RETURNER = "RETURNER", "Returner"
+        SACKER = "SACKER", "Sacker"
+        
+    play = models.ForeignKey(Play, on_delete=models.CASCADE, related_name="participants")
+    player = models.ForeignKey("league.Player", on_delete=models.PROTECT, related_name="participations")
+    role = models.CharField(choices=Role.choices)
+    credit = models.DecimalField(max_digits=2, decimal_places=1, blank=True, default=1.0)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=["play", "player", "role"], name="one_player_per_play"),
+        ]
+
+    def __str__(self):
+        suffix = ""
+        if self.play.down == 1:
+            suffix = "st"
+        elif self.play.down == 2:
+            suffix = "nd"
+        elif self.play.down == 3:
+            suffix = "rd"
+        elif self.play.down == 4:
+            suffix = "th"
+            
+        if self.role == self.Role.RECEIVER or self.role == self.Role.PASSER or self.role == self.Role.RUSHER:
+            return (f"{self.player} ({self.get_role_display()}) - {self.play} for {self.play.yards_gained} yards")            
+        return (f"{self.player} ({self.gte_role_display()}) - {self.play}")

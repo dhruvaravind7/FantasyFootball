@@ -25,6 +25,7 @@ class Team(models.Model):
     abbreviation = models.CharField(max_length=4, unique=True)
     conference = models.CharField(max_length=3, choices=Conference.choices)
     division = models.CharField(max_length=5, choices=Division.choices)
+    espn_id = models.CharField(max_length=20, unique=True, null=True, blank=True)
     
     class Meta:
         ordering = ['city']
@@ -68,6 +69,7 @@ class Player(models.Model):
         related_name="players"
     )
     gsis_id = models.CharField(max_length=20, unique=True, null=True, blank=True)
+    espn_id = models.CharField(max_length=20, unique=True, null=True, blank=True)
     
     def __str__(self):
         return f"{self.first_name} {self.last_name} ({self.position})"
@@ -86,6 +88,7 @@ class Game(models.Model):
     status = models.CharField(default=Status.SCHEDULED, choices=Status.choices)
     home_score = models.PositiveSmallIntegerField(default=0)
     away_score = models.PositiveSmallIntegerField(default=0)
+    espn_id = models.CharField(max_length=20, unique=True, null=True, blank=True)
     
     def __str__(self):
         return f"Week {self.week}: {self.away_team} @ {self.home_team}"

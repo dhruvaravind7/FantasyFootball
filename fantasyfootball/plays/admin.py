@@ -1,11 +1,17 @@
 from django.contrib import admin
-from .models import Drive, Play
+from .models import Drive, Play, PlayParticipant
 
 
 class PlayInline(admin.TabularInline):
     model = Play
     extra = 0                      # don't show blank "add another" rows by default
     fields = ["number", "quarter", "down", "distance", "yardline_100", "play_type", "yards_gained"]
+
+class PlayParticipantInline(admin.TabularInline):
+    model = PlayParticipant
+    extra = 0
+    fields = ["player", "role", "credit"]
+    autocomplete_fields = ["player"]
 
 @admin.register(Drive)
 class DriveAdmin(admin.ModelAdmin):
@@ -25,4 +31,5 @@ class PlayAdmin(admin.ModelAdmin):
     list_filter = ["quarter", "play_type", "is_touchdown", "down"]
     search_fields = ["description"]
     list_select_related = ["drive__offense"]
+    inlines = [PlayParticipantInline]
     
