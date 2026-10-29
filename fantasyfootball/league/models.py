@@ -44,30 +44,41 @@ class Player(models.Model):
         RB = "RB", "Running Back"
         FB = "FB", "Fullback"
         TE = "TE", "Tight End"
+        OL = "OL", "Offensive Line"
         OT = "OT", "Offensive Tackle"
         G = "G", "Guard"
         C = "C", "Center"
         
+        DB = "DB", "Defensive Back"
         DE = "DE", "Defensive End"
         DT = "DT", "Defensive Tackle"
         LB = "LB", "Linebacker"
         CB = "CB", "Cornerback"
         S = "S","Safety"
         
-        K = "K", "Kicker"
+        PK = "PK", "Place Kicker"
         P = "P", "Punter"        
         LS = "LS", "Long Snapper"
-    
+
+    class RosterStatus(models.TextChoices):
+        ACTIVE = "ACTIVE", "Active"        
+        PRACTICE_SQUAD = "PRACTICE_SQUAD", "Practice Squad"
+        RESERVE = "RESERVE", "Reserve"
+        SUSPENDED = "SUSPENDED", "Suspended"
+        
+    class InjuryStatus(models.TextChoices):
+        QUESTIONABLE = "QUESTIONABLE", "Questionable"
+        DOUBTFUL = "DOUBTFUL", "Doubtful"
+        OUT = "OUT", "Out"
+        INJURED_RESERVE = "INJURED_RESERVE", "Injured Reserve"
+            
     first_name = models.CharField(max_length=50)
     last_name = models.CharField(max_length=50)
     position = models.CharField(max_length=2, choices=Position.choices)
     jersey_number = models.PositiveSmallIntegerField(null=True, blank=True)
-    team = models.ForeignKey(
-        Team,
-        on_delete=models.SET_NULL,
-        null=True, blank=True,
-        related_name="players"
-    )
+    team = models.ForeignKey(Team, on_delete=models.SET_NULL, null=True, blank=True, related_name="players")
+    roster_status = models.CharField(max_length=20, choices=RosterStatus.choices, blank=True)
+    injury_status = models.CharField(max_length=20, choices=InjuryStatus.choices, blank=True)    
     gsis_id = models.CharField(max_length=20, unique=True, null=True, blank=True)
     espn_id = models.CharField(max_length=20, unique=True, null=True, blank=True)
     
