@@ -19,4 +19,12 @@ def fetch_scoreboard(season: int | None=None, week: int | None=None) -> dict:
         params = {"dates": season, "seasontype": 2, "week": week}   # seasontype 2 is regular season
     return get_json(f"{BASE}/scoreboard", params)
 
-        
+def fetch_roster(team_espn_id: str) -> list[dict]:
+    data = get_json(f"{BASE}/teams/{team_espn_id}/roster")
+    final = []
+    for entry in data["athletes"]:
+        position = entry["position"]
+        for athlete in entry["items"]:
+            athlete["side"] = position
+            final.append(athlete)
+    return final
