@@ -1,5 +1,5 @@
 from django.contrib import admin
-from .models import Drive, Play, PlayParticipant
+from .models import Drive, GameEvent, Play, PlayParticipant
 
 
 class PlayInline(admin.TabularInline):
@@ -32,4 +32,9 @@ class PlayAdmin(admin.ModelAdmin):
     search_fields = ["description"]
     list_select_related = ["drive__offense"]
     inlines = [PlayParticipantInline]
-    
+
+@admin.register(GameEvent)
+class GameEventAdmin(admin.ModelAdmin):
+    list_display = ["__str__", "game", "event_type", "team"]
+    list_filter = ["event_type", "game__season"]
+    list_select_related = ["game__home_team", "game__away_team", "team"]
