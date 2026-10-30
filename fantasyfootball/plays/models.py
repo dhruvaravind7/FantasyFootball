@@ -43,13 +43,17 @@ class Play(models.Model):
         PUNT = "punt", "Punt"
         FIELD_GOAL = "field_goal", "Field Goal"
         KICKOFF = "kickoff", "Kickoff"
-        EXTRA_POINT = "extra_point", "Extra Point"
         QB_KNEEL = "qb_kneel", "QB Kneel"
         QB_SPIKE = "qb_spike", "QB Spike"
         NO_PLAY = "no_play", "No Play"
     
+    class PatType(models.TextChoices):
+        KICK = "KICK", "Kick"
+        TWO_POINT_PASS = "TWO_POINT_PASS", "Two Point Pass"
+        TWO_POINT_RUSH = "TWO_POINT_RUSH", "Two Point Rush"
+    
     drive = models.ForeignKey(Drive, on_delete=models.CASCADE, related_name="plays")
-    number = models.PositiveSmallIntegerField()
+    number = models.PositiveIntegerField()
     espn_id = models.CharField(max_length=20, unique=True, null=True, blank=True)
     
     quarter = models.PositiveSmallIntegerField()
@@ -67,7 +71,10 @@ class Play(models.Model):
     # Score AFTER the play
     home_score = models.PositiveSmallIntegerField(default=0)
     away_score = models.PositiveSmallIntegerField(default=0)
+    pat_type = models.CharField(max_length=20, choices=PatType.choices, blank=True)
+    pat_points = models.PositiveSmallIntegerField(default=0)
 
+    
     is_completion = models.BooleanField(default=False)
     is_touchdown = models.BooleanField(default=False)
     is_interception = models.BooleanField(default=False)
@@ -141,3 +148,33 @@ class PlayParticipant(models.Model):
         if self.role == self.Role.RECEIVER or self.role == self.Role.PASSER or self.role == self.Role.RUSHER:
             return (f"{self.player} ({self.get_role_display()}) - {self.play} for {self.play.yards_gained} yards")            
         return (f"{self.player} ({self.get_role_display()}) - {self.play}")
+    
+class GameEvent(models.Model):
+    """Items in ESPN's play feed that aren't snaps: timeouts, quarter ends, the coin toss, defensive two-pointers."""
+    class EventType(models.TextChoices):
+        TIMEOUT = "TIMEOUT", "Timeout"
+        OFFICIAL_TIMEOUT = "OFFICIAL_TIMEOUT", "Official Timeout"
+        TWO_MINUTE_WARNING = "TWO_MINUTE_WARNING", "Two Minute Warning"
+        END_PERIOD = "END_PERIOD", "End Period"
+        END_HALF = "END_HALF", "End half"
+        END_REGULATION = "END_REGULATION", "End Regulation"
+        END_GAME = "END_GAME", "End game"
+        COIN_TOSS = "COIN_TOSS", "Coin Toss"
+        DEFENSIVE_TWO_POINT = "DEFENSIVE_TWO_POINT", "Defensive Two Point"
+        
+    game = models.ForeignKey("league.Game", on_delete=models.CASCADE, related_name="events")
+    number = models.PositiveIntegerField()
+    espn_id = models.CharField(max_length=20, unique=True)
+    event_type = models.CharField(max_length=20, choices=EventType.choices)
+    quarter = models.PositiveSmallIntegerField()
+    clock_seconds = models.PositiveSmallIntegerField()
+    team = models.ForeignKey("league.Team", on_delete=models.PROTECT, related_name="+", null=True, blank=True)
+    description = models.TextField(blank=True)
+    
+    class Meta:
+        ordering = ["game", "number"]
+    
+    def __str__(self):
+        minutes, seconds = divmod(self.clock_seconds, 60)
+        return f"Q{self.quarter} {minutes}:{seconds:02d} {self.get_event_type_display()}"    
+        

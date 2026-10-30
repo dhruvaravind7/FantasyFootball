@@ -1,6 +1,7 @@
 import requests
 
 BASE = "https://site.api.espn.com/apis/site/v2/sports/football/nfl"
+CORE = "https://sports.core.api.espn.com/v2/sports/football/leagues/nfl"
 TIMEOUT = 10
 
 def get_json(url: str, params: dict | None = None) -> dict:
@@ -28,3 +29,16 @@ def fetch_roster(team_espn_id: str) -> list[dict]:
             athlete["side"] = position
             final.append(athlete)
     return final
+
+def fetch_drives(game_espn_id: str) -> list[dict]:
+    url = f"{CORE}/events/{game_espn_id}/competitions/{game_espn_id}/drives"
+    return get_json(url, {"limit": 100})["items"]
+
+def id_from_ref(ref: dict, kind: str) -> str:
+    """{"$ref": ".../teams/17?lang=en"} with kind="teams" → "17" """
+    return ref["$ref"].split(f"/{kind}/")[1].split("?")[0]
+
+def fetch_plays(game_espn_id: str) -> list[dict]:
+    url = f"{CORE}/events/{game_espn_id}/competitions/{game_espn_id}/plays"
+    items = get_json(url, {"limit": 400})["items"]
+    return sorted(items, key = lambda x: int(x["sequenceNumber"]))
