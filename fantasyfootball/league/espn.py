@@ -42,3 +42,7 @@ def fetch_plays(game_espn_id: str) -> list[dict]:
     url = f"{CORE}/events/{game_espn_id}/competitions/{game_espn_id}/plays"
     items = get_json(url, {"limit": 400})["items"]
     return sorted(items, key = lambda x: int(x["sequenceNumber"]))
+
+def fetch_athlete(espn_id: str) -> dict:
+    url = f"{CORE}/athletes/{espn_id}"
+    return get_json(url)

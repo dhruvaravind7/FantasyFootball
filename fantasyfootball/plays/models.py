@@ -132,6 +132,13 @@ class PlayParticipant(models.Model):
         PUNTER = "PUNTER", "Punter"
         RETURNER = "RETURNER", "Returner"
         SACKER = "SACKER", "Sacker"
+        PASS_DEFENDER = "PASS_DEFENDER", "Pass Defender"
+        FORCED_FUMBLE = "FORCED_FUMBLE", "Forced Fumble"
+        SCORER = "SCORER", "Scorer"
+        BLOCKER = "BLOCKER", "Blocker"
+        PAT_PASSER = "PAT_PASSER", "PAT Passer"
+        PAT_RUSHER = "PAT_RUSHER", "PAT Rusher"
+        PAT_SCORER = "PAT_SCORER", "PAT Scorer"
         
     play = models.ForeignKey(Play, on_delete=models.CASCADE, related_name="participants")
     player = models.ForeignKey("league.Player", on_delete=models.PROTECT, related_name="participations")
