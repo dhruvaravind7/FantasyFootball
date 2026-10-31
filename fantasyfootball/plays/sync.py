@@ -1,3 +1,5 @@
+import hashlib
+import json
 from decimal import Decimal
 
 from django.db import transaction
@@ -157,6 +159,10 @@ def pat_for(play: dict) -> tuple[str, int]:
         raise ESPNFormatError(f"Unknown point-after type {pat['text']!r} on play {play['id']}. Add it to PAT_TYPE_MAP.")
     return PAT_TYPE_MAP[pat["text"]], pat["value"]
 
+def fingerprint(item: dict) -> str:
+    """Same ESPN data gives the same string; any change at all gives a different one."""
+    return hashlib.md5(json.dumps(item, sort_keys=True).encode()).hexdigest()
+
 @transaction.atomic
 def sync_game(game: Game) -> dict:
     teams_by_espn_id = {game.home_team.espn_id: game.home_team, game.away_team.espn_id: game.away_team}
@@ -174,9 +180,19 @@ def sync_game(game: Game) -> dict:
             players_by_espn_id[athlete_id] = Player.objects.create(first_name=athlete["firstName"], last_name=athlete["lastName"], position=position,
                                                                     jersey_number=int(jersey) if jersey is not None else None, team=None, espn_id=athlete_id)
     
+    # What we saved last time, so we only write what ESPN changed since (one query per table)
+    drives_by_espn_id = {drive.espn_id: drive for drive in Drive.objects.filter(game=game)}
+    play_hashes = dict(Play.objects.filter(drive__game=game).values_list("espn_id", "espn_hash"))
+    event_hashes = dict(GameEvent.objects.filter(game=game).values_list("espn_id", "espn_hash"))
+    unchanged = 0
+    drives_saved = 0
+
     # Drives
-    drives_by_espn_id = {}
     for d in espn.fetch_drives(game.espn_id):
+        espn_hash = fingerprint(d)
+        if d["id"] in drives_by_espn_id and drives_by_espn_id[d["id"]].espn_hash == espn_hash:
+            unchanged += 1
+            continue
         offense = teams_by_espn_id[espn.id_from_ref(d["team"], "teams")]
         # A drive's yardLine is measured from the home team's goal line
         yardline_100 = d["start"]["yardLine"]
@@ -190,8 +206,9 @@ def sync_game(game: Game) -> dict:
         
         drive, _ = Drive.objects.update_or_create(espn_id=d["id"], defaults={"game": game, "number": int(d["sequenceNumber"]), "offense": offense, 
                                                                                 "start_quarter": d["start"]["period"]["number"], "start_yardline_100": yardline_100,
-                                                                                "result": result,})
+                                                                                "result": result, "espn_hash": espn_hash})
         drives_by_espn_id[d["id"]] = drive
+        drives_saved += 1
     
     # Plays and game events
     plays_saved = 0
@@ -199,6 +216,10 @@ def sync_game(game: Game) -> dict:
     skipped = 0
     for p in plays:
         espn_type = p["type"]["text"]
+        espn_hash = fingerprint(p)
+        if play_hashes.get(p["id"]) == espn_hash or event_hashes.get(p["id"]) == espn_hash:
+            unchanged += 1
+            continue
         
         # Game events (timeouts, quarter ends...) aren't snaps, so they get their own table
         if espn_type in EVENT_TYPE_MAP:
@@ -206,7 +227,7 @@ def sync_game(game: Game) -> dict:
             team = teams_by_espn_id[espn.id_from_ref(p["team"], "teams")] if event_type in EVENTS_WITH_TEAM else None
             GameEvent.objects.update_or_create(espn_id=p["id"], defaults={"game": game, "number": int(p["sequenceNumber"]), "event_type": event_type,
                                                                             "quarter": p["period"]["number"], "clock_seconds": int(p["clock"]["value"]), "team": team,
-                                                                            "description": p["text"]})
+                                                                            "description": p["text"], "espn_hash": espn_hash})
             events_saved += 1
             continue    
         
@@ -229,7 +250,7 @@ def sync_game(game: Game) -> dict:
         play, _ = Play.objects.update_or_create(espn_id=p["id"], defaults={"number": int(p["sequenceNumber"]), "drive": drive, "quarter": p["period"]["number"], "clock_seconds": int(p["clock"]["value"]),
                                                                     "down": down, "distance": distance, "yardline_100": yardline_100, "play_type": play_type,
                                                                     "espn_type": espn_type, "yards_gained": p["statYardage"], "description": p["text"], "home_score": p["homeScore"],
-                                                                    "away_score": p["awayScore"], "pat_type": pat_type, "pat_points": pat_points, **flags_for(p, play_type)})
+                                                                    "away_score": p["awayScore"], "pat_type": pat_type, "pat_points": pat_points, "espn_hash": espn_hash, **flags_for(p, play_type)})
         participants = []
         seen = set()
         sacker_count = sum(1 for x in p.get("participants", []) if x["type"] == "sackedBy")
@@ -253,4 +274,5 @@ def sync_game(game: Game) -> dict:
         PlayParticipant.objects.bulk_create(participants)
         plays_saved += 1
         
-    return {"drives": len(drives_by_espn_id), "plays": plays_saved, "events": events_saved, "skipped": skipped}
+    # drives, plays and events count rows written this time; unchanged ones were already up to date
+    return {"drives": drives_saved, "plays": plays_saved, "events": events_saved, "skipped": skipped, "unchanged": unchanged}
