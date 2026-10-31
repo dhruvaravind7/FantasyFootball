@@ -1,9 +1,11 @@
+from decimal import Decimal
+
 from django.core.management.base import BaseCommand, CommandError
 from django.db import transaction
 
 from league import espn
-from league.models import Game, Team
-from plays.models import Drive, Play, GameEvent
+from league.models import Game, Player
+from plays.models import Drive, Play, GameEvent, PlayParticipant
 
 DRIVE_RESULT_MAP = {
     "PUNT": Drive.Result.PUNT,
@@ -70,8 +72,58 @@ PAT_TYPE_MAP = {
     "Two Point Rush": Play.PatType.TWO_POINT_RUSH
 }
 
+ROLE_MAP = {
+    "passer": PlayParticipant.Role.PASSER,
+    "receiver": PlayParticipant.Role.RECEIVER,
+    "sackedBy": PlayParticipant.Role.SACKER,
+    "rusher": PlayParticipant.Role.RUSHER,
+    "tackler": PlayParticipant.Role.TACKLER,
+    "assistedBy": PlayParticipant.Role.ASSIST_TACKLER,
+    "fumbler": PlayParticipant.Role.FUMBLER,
+    "recoverer": PlayParticipant.Role.FUMBLE_RECOVERER,
+    "kicker": PlayParticipant.Role.KICKER,
+    "punter": PlayParticipant.Role.PUNTER,
+    "returner": PlayParticipant.Role.RETURNER,
+    "passDefender": PlayParticipant.Role.PASS_DEFENDER,
+    "forcedBy": PlayParticipant.Role.FORCED_FUMBLE,
+    "scorer": PlayParticipant.Role.SCORER,
+    "blocker": PlayParticipant.Role.BLOCKER,
+    "patRusher": PlayParticipant.Role.PAT_RUSHER,
+    "patPasser": PlayParticipant.Role.PAT_PASSER,
+    "patScorer": PlayParticipant.Role.PAT_SCORER
+}
 
+IGNORED_ROLES = {"other", "penalized", "snapper", "holder"}
 FUMBLE_TYPES = {"Fumble Recovery (Own)", "Fumble Recovery (Opponent)", "Fumble Return Touchdown", "Safety"}
+INTERCEPTION_TYPES = {"Pass Interception Return", "Interception Return Touchdown"}
+
+def flags_for(play: dict, play_type: str) -> dict:
+    roles = {participant["type"] for participant in play.get("participants", [])}
+    espn_type = play["type"]["text"]
+    is_interception = espn_type in INTERCEPTION_TYPES
+    is_touchdown = play.get("scoringType", {}).get("abbreviation") == "TD"
+    
+    return {
+        "is_interception": is_interception,
+        "is_sack": "sackedBy" in roles,
+        "is_touchdown": is_touchdown,
+        "is_fumble_lost": "fumbler" in roles and not is_interception and play["isTurnover"],
+        "is_completion": play_type == Play.PlayType.PASS and "receiver" in roles and espn_type != "Pass Incompletion" and not is_interception,
+        "is_first_down": achieved_first_down(play)
+    }
+
+def achieved_first_down(play: dict) -> bool:
+    if play["type"]["text"] in ("Passing Touchdown", "Rushing Touchdown"):    # the NFL counts offensive TDs as first downs
+        return True
+    if play["start"]["down"] < 1 or play["start"]["down"] > 4 or play.get("end", {}).get("team") is None:
+        return False
+    start_team = espn.id_from_ref(play["start"]["team"], "teams")
+    end_team = espn.id_from_ref(play["end"]["team"], "teams")
+    if start_team != end_team or play["end"]["down"] != 1:
+        return False
+    
+    # 2nd-4th down back to 1st down always means a first down. From 1st down, only if they gained the distance (not a false start)
+    return play["start"]["down"] >= 2 or play["statYardage"] >= play["start"]["distance"]
 
 def play_type_for(play: dict) -> str:
     """Turn ESPN's play type into ours. Fumbles don't say what kind of play they
@@ -115,7 +167,21 @@ class Command(BaseCommand):
     def handle(self, *args, **options):
         game = Game.objects.select_related("home_team", "away_team").get(espn_id=options["game_id"])
         teams_by_espn_id = {game.home_team.espn_id: game.home_team, game.away_team.espn_id: game.away_team}
+        plays = espn.fetch_plays(game.espn_id)
+        athlete_ids = {espn.id_from_ref(x["athlete"], "athletes") for p in plays for x in p.get("participants", [])}
+        players_by_espn_id = {pl.espn_id: pl for pl in Player.objects.filter(espn_id__in=athlete_ids)}
+        for athlete_id in athlete_ids:
+            if athlete_id not in players_by_espn_id:
+                # Played in this game but isn't on any current roster (released since), so load them as a free agent
+                athlete = espn.fetch_athlete(athlete_id)
+                position = athlete["position"]["abbreviation"]
+                if position not in Player.Position.values:
+                    raise CommandError(f"Unknown position {position!r} for athlete {athlete_id}")
+                jersey = athlete.get("jersey")
+                players_by_espn_id[athlete_id] = Player.objects.create(first_name=athlete["firstName"], last_name=athlete["lastName"], position=position,
+                                                                       jersey_number=int(jersey) if jersey is not None else None, team=None, espn_id=athlete_id)
         
+        # Drives
         drives_by_espn_id = {}
         for d in espn.fetch_drives(game.espn_id):
             offense = teams_by_espn_id[espn.id_from_ref(d["team"], "teams")]
@@ -129,17 +195,19 @@ class Command(BaseCommand):
                     raise CommandError(f"Unknown drive result {result!r} on drive {d['id']}. Add it to DRIVE_RESULT_MAP.")
                 result = DRIVE_RESULT_MAP[result]
             
-            drive, _ = Drive.objects.update_or_create(espn_id=d["id"],
-                                                      defaults={"game": game, "number": int(d["sequenceNumber"]), "offense": offense, "start_quarter": d["start"]["period"]["number"],
-                                                                "start_yardline_100": yardline_100, "result": result,})
+            drive, _ = Drive.objects.update_or_create(espn_id=d["id"], defaults={"game": game, "number": int(d["sequenceNumber"]), "offense": offense, 
+                                                                                 "start_quarter": d["start"]["period"]["number"], "start_yardline_100": yardline_100,
+                                                                                 "result": result,})
             drives_by_espn_id[d["id"]] = drive
-            
+        
+        # Plays and game events
         plays_saved = 0
         events_saved = 0
         skipped = 0
-        for p in espn.fetch_plays(game.espn_id):
+        for p in plays:
             espn_type = p["type"]["text"]
             
+            # Game events (timeouts, quarter ends...) aren't snaps, so they get their own table
             if espn_type in EVENT_TYPE_MAP:
                 event_type = EVENT_TYPE_MAP[espn_type]
                 team = teams_by_espn_id[espn.id_from_ref(p["team"], "teams")] if event_type in EVENTS_WITH_TEAM else None
@@ -149,6 +217,7 @@ class Command(BaseCommand):
                 events_saved += 1
                 continue    
             
+            # A real play
             play_type = play_type_for(p)
             pat_type, pat_points = pat_for(p)
             drive = drives_by_espn_id[espn.id_from_ref(p["drive"], "drives")]
@@ -158,17 +227,37 @@ class Command(BaseCommand):
             
             yardline_100 = start["yardsToEndzone"]
             if yardline_100 < 1:
-                # ESPN sometimes sends 0 by mistake; yardLine is still right, measured from the home goal line
                 possession = teams_by_espn_id[espn.id_from_ref(start["team"], "teams")]
                 yardline_100 = 100 - start["yardLine"] if possession == game.home_team else start["yardLine"]
             if not 1 <= yardline_100 <= 99:
                 skipped += 1
                 continue
             
-            Play.objects.update_or_create(espn_id=p["id"], defaults={"number": int(p["sequenceNumber"]), "drive": drive, "quarter": p["period"]["number"], "clock_seconds": int(p["clock"]["value"]),
+            play, _ = Play.objects.update_or_create(espn_id=p["id"], defaults={"number": int(p["sequenceNumber"]), "drive": drive, "quarter": p["period"]["number"], "clock_seconds": int(p["clock"]["value"]),
                                                                      "down": down, "distance": distance, "yardline_100": yardline_100, "play_type": play_type,
                                                                      "espn_type": espn_type, "yards_gained": p["statYardage"], "description": p["text"], "home_score": p["homeScore"],
-                                                                     "away_score": p["awayScore"], "pat_type": pat_type, "pat_points": pat_points})
+                                                                     "away_score": p["awayScore"], "pat_type": pat_type, "pat_points": pat_points, **flags_for(p, play_type)})
+            participants = []
+            seen = set()
+            sacker_count = sum(1 for x in p.get("participants", []) if x["type"] == "sackedBy")
+            for x in p.get("participants", []):
+                role_type = x["type"]
+                if role_type in IGNORED_ROLES:
+                    continue
+                if role_type not in ROLE_MAP:
+                    raise CommandError(f"Unknown participant type {role_type!r} on play {p['id']}. Add it to ROLE_MAP or IGNORED_ROLES.")
+                
+                role_type = ROLE_MAP[role_type]
+                if role_type == PlayParticipant.Role.RETURNER and espn_type in INTERCEPTION_TYPES:    # ESPN lists the interceptor as the returner
+                    role_type = PlayParticipant.Role.INTERCEPTOR
+                player = players_by_espn_id[espn.id_from_ref(x["athlete"], "athletes")]
+                if (player.id, role_type) in seen:
+                    continue
+                seen.add((player.id, role_type))
+                credit = Decimal(1) / sacker_count if role_type == PlayParticipant.Role.SACKER else Decimal("1")
+                participants.append(PlayParticipant(play=play, player=player, role=role_type, credit=credit))
+            play.participants.all().delete()
+            PlayParticipant.objects.bulk_create(participants)
             plays_saved += 1
             
         self.stdout.write(f"{game}: {len(drives_by_espn_id)} drives, {plays_saved} plays, {events_saved} events, {skipped} skipped")
