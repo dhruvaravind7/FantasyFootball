@@ -4,6 +4,10 @@ BASE = "https://site.api.espn.com/apis/site/v2/sports/football/nfl"
 CORE = "https://sports.core.api.espn.com/v2/sports/football/leagues/nfl"
 TIMEOUT = 10
 
+
+class ESPNFormatError(Exception):
+    """ESPN sent something our parser doesn't understand."""
+
 def get_json(url: str, params: dict | None = None) -> dict:
     response = requests.get(url, params=params, timeout=TIMEOUT)
     response.raise_for_status()
