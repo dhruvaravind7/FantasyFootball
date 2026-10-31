@@ -18,4 +18,4 @@ class Command(BaseCommand):
         except ESPNFormatError as e:
             raise CommandError(str(e))
         
-        self.stdout.write(f"{game}: {counts["drives"]} drives, {counts["plays"]} plays, {counts["events"]} events, {counts["skipped"]} skipped")
+        self.stdout.write(f"{game}: {counts["drives"]} drives, {counts["plays"]} plays, {counts["events"]} events, {counts["skipped"]} skipped, {counts["unchanged"]} unchanged")

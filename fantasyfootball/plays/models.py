@@ -23,6 +23,8 @@ class Drive(models.Model):
     start_yardline_100 = models.PositiveSmallIntegerField()
     result = models.CharField(choices=Result.choices, blank=True)
     espn_id = models.CharField(max_length=20, unique=True, null=True, blank=True)
+    espn_hash = models.CharField(max_length=32, blank=True)    # fingerprint of ESPN's data, to skip unchanged rows
+    espn_hash = models.CharField(max_length=32, blank=True)
     
     class Meta:
         ordering = ["game", "number"]
@@ -55,6 +57,8 @@ class Play(models.Model):
     drive = models.ForeignKey(Drive, on_delete=models.CASCADE, related_name="plays")
     number = models.PositiveIntegerField()
     espn_id = models.CharField(max_length=20, unique=True, null=True, blank=True)
+    espn_hash = models.CharField(max_length=32, blank=True)    # fingerprint of ESPN's data, to skip unchanged rows
+    espn_hash = models.CharField(max_length=32, blank=True)
     
     quarter = models.PositiveSmallIntegerField()
     clock_seconds = models.PositiveSmallIntegerField()
@@ -172,11 +176,13 @@ class GameEvent(models.Model):
     game = models.ForeignKey("league.Game", on_delete=models.CASCADE, related_name="events")
     number = models.PositiveIntegerField()
     espn_id = models.CharField(max_length=20, unique=True)
+    espn_hash = models.CharField(max_length=32, blank=True)    # fingerprint of ESPN's data, to skip unchanged rows
     event_type = models.CharField(max_length=20, choices=EventType.choices)
     quarter = models.PositiveSmallIntegerField()
     clock_seconds = models.PositiveSmallIntegerField()
     team = models.ForeignKey("league.Team", on_delete=models.PROTECT, related_name="+", null=True, blank=True)
     description = models.TextField(blank=True)
+    espn_hash = models.CharField(max_length=32, blank=True)
     
     class Meta:
         ordering = ["game", "number"]

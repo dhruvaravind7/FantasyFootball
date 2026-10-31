@@ -19,7 +19,7 @@ class Command(BaseCommand):
                 if game.status == Game.Status.SCHEDULED:     # nothing to load until kickoff
                     continue
                 counts = sync_game(game)
-                self.stdout.write(f"{game}: {counts['drives']} drives, {counts['plays']} plays, {counts['events']} events, {counts['skipped']} skipped")
+                self.stdout.write(f"{game}: {counts['drives']} drives, {counts['plays']} plays, {counts['events']} events, {counts['skipped']} skipped, {counts['unchanged']} unchanged")
         except ESPNFormatError as e:
             raise CommandError(str(e))
 
