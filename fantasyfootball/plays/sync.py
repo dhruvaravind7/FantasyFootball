@@ -169,6 +169,7 @@ def sync_game(game: Game) -> dict:
     plays = espn.fetch_plays(game.espn_id)
     athlete_ids = {espn.id_from_ref(x["athlete"], "athletes") for p in plays for x in p.get("participants", [])}
     players_by_espn_id = {pl.espn_id: pl for pl in Player.objects.filter(espn_id__in=athlete_ids)}
+    
     for athlete_id in athlete_ids:
         if athlete_id not in players_by_espn_id:
             # Played in this game but isn't on any current roster (released since), so load them as a free agent
@@ -186,6 +187,17 @@ def sync_game(game: Game) -> dict:
     event_hashes = dict(GameEvent.objects.filter(game=game).values_list("espn_id", "espn_hash"))
     unchanged = 0
     drives_saved = 0
+
+    # Remove anything ESPN took out of the feed. This comes before the writes because a replacement play can reuse the same sequence number
+    feed_ids = {p["id"] for p in plays}
+    saved = len(play_hashes) + len(event_hashes)
+    if len(feed_ids) < saved / 2:
+        raise ESPNFormatError(f"Feed has {len(feed_ids)} plays but we have {saved} saved; refusing to delete")
+    stale_plays = Play.objects.filter(drive__game=game).exclude(espn_id__in=feed_ids)
+    stale_events = GameEvent.objects.filter(game=game).exclude(espn_id__in=feed_ids)
+    deleted = stale_plays.count() + stale_events.count()
+    stale_plays.delete()
+    stale_events.delete()
 
     # Drives
     for d in espn.fetch_drives(game.espn_id):
@@ -270,9 +282,10 @@ def sync_game(game: Game) -> dict:
             seen.add((player.id, role_type))
             credit = Decimal(1) / sacker_count if role_type == PlayParticipant.Role.SACKER else Decimal("1")
             participants.append(PlayParticipant(play=play, player=player, role=role_type, credit=credit))
+            
         play.participants.all().delete()
         PlayParticipant.objects.bulk_create(participants)
         plays_saved += 1
         
     # drives, plays and events count rows written this time; unchanged ones were already up to date
-    return {"drives": drives_saved, "plays": plays_saved, "events": events_saved, "skipped": skipped, "unchanged": unchanged}
+    return {"drives": drives_saved, "plays": plays_saved, "events": events_saved, "skipped": skipped, "unchanged": unchanged, "deleted": deleted}

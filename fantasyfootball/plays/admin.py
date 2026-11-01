@@ -1,5 +1,5 @@
 from django.contrib import admin
-from .models import Drive, GameEvent, Play, PlayParticipant
+from .models import Drive, GameEvent, Play, PlayParticipant, SyncError
 
 
 class PlayInline(admin.TabularInline):
@@ -38,3 +38,9 @@ class GameEventAdmin(admin.ModelAdmin):
     list_display = ["__str__", "game", "event_type", "team"]
     list_filter = ["event_type", "game__season"]
     list_select_related = ["game__home_team", "game__away_team", "team"]
+    
+@admin.register(SyncError)
+class SyncErrorAdmin(admin.ModelAdmin):
+    list_display = ["game", "message", "created_at", "resolved"]
+    list_filter = ["resolved"]
+    list_select_related = ["game__home_team", "game__away_team"]

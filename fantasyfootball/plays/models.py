@@ -23,7 +23,6 @@ class Drive(models.Model):
     start_yardline_100 = models.PositiveSmallIntegerField()
     result = models.CharField(choices=Result.choices, blank=True)
     espn_id = models.CharField(max_length=20, unique=True, null=True, blank=True)
-    espn_hash = models.CharField(max_length=32, blank=True)    # fingerprint of ESPN's data, to skip unchanged rows
     espn_hash = models.CharField(max_length=32, blank=True)
     
     class Meta:
@@ -58,7 +57,6 @@ class Play(models.Model):
     number = models.PositiveIntegerField()
     espn_id = models.CharField(max_length=20, unique=True, null=True, blank=True)
     espn_hash = models.CharField(max_length=32, blank=True)    # fingerprint of ESPN's data, to skip unchanged rows
-    espn_hash = models.CharField(max_length=32, blank=True)
     
     quarter = models.PositiveSmallIntegerField()
     clock_seconds = models.PositiveSmallIntegerField()
@@ -176,13 +174,12 @@ class GameEvent(models.Model):
     game = models.ForeignKey("league.Game", on_delete=models.CASCADE, related_name="events")
     number = models.PositiveIntegerField()
     espn_id = models.CharField(max_length=20, unique=True)
-    espn_hash = models.CharField(max_length=32, blank=True)    # fingerprint of ESPN's data, to skip unchanged rows
+    espn_hash = models.CharField(max_length=32, blank=True)
     event_type = models.CharField(max_length=20, choices=EventType.choices)
     quarter = models.PositiveSmallIntegerField()
     clock_seconds = models.PositiveSmallIntegerField()
     team = models.ForeignKey("league.Team", on_delete=models.PROTECT, related_name="+", null=True, blank=True)
     description = models.TextField(blank=True)
-    espn_hash = models.CharField(max_length=32, blank=True)
     
     class Meta:
         ordering = ["game", "number"]
@@ -190,4 +187,13 @@ class GameEvent(models.Model):
     def __str__(self):
         minutes, seconds = divmod(self.clock_seconds, 60)
         return f"Q{self.quarter} {minutes}:{seconds:02d} {self.get_event_type_display()}"    
-        
+
+class SyncError(models.Model):
+    """ESPN sent something the parser doesn't understand. Updates for this game are paused until resolved."""
+    game = models.ForeignKey("league.Game", on_delete=models.CASCADE, related_name="sync_errors")
+    message = models.TextField()
+    created_at = models.DateTimeField(auto_now_add=True)
+    resolved = models.BooleanField(default=False)
+
+    def __str__(self):
+        return f"{self.game}: {self.message}"
