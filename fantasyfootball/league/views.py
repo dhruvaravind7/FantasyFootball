@@ -75,7 +75,7 @@ class PlayerViewSet(viewsets.ReadOnlyModelViewSet):
     @action(detail=True)
     def games(self, request, pk=None):
         player = self.get_object()
-        game_stats = PlayerGameStats.objects.filter(player=player).select_related("game", "team", "game__home_team", "game__away_team").order_by("game__kickoff")
+        game_stats = PlayerGameStats.objects.filter(player=player).select_related("game__home_team", "game__away_team").order_by("game__kickoff")
         
         items = GameLogSerializer(game_stats, many=True).data
         return Response(items)
