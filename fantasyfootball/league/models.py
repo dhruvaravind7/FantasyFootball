@@ -1,4 +1,5 @@
 from django.db import models
+from decimal import Decimal
 
 # Create your models here.
 class Season(models.Model):
@@ -107,3 +108,50 @@ class Game(models.Model):
     def __str__(self):
         return f"Week {self.week}: {self.away_team} @ {self.home_team}"
     
+class PlayerGameStats(models.Model):
+    """A player's official stat line for one game, copied from ESPN's box score."""
+    
+    game = models.ForeignKey(Game, on_delete=models.CASCADE, related_name="player_stats")
+    player = models.ForeignKey(Player, on_delete=models.CASCADE, related_name="game_stats")
+    team = models.ForeignKey(Team, on_delete=models.PROTECT, related_name="+")
+    
+    espn_hash = models.CharField(max_length=32, blank=True)
+
+    pass_completions = models.SmallIntegerField(default=0)
+    pass_attempts = models.SmallIntegerField(default=0)
+    pass_yards = models.SmallIntegerField(default=0)
+    pass_tds = models.SmallIntegerField(default=0)
+    interceptions_thrown = models.SmallIntegerField(default=0)
+    
+    rush_yards = models.SmallIntegerField(default=0)
+    rush_attempts = models.PositiveSmallIntegerField(default=0)
+    rush_tds = models.PositiveSmallIntegerField(default=0)
+    
+    receptions = models.PositiveSmallIntegerField(default=0)
+    rec_yards = models.SmallIntegerField(default=0)
+    targets = models.PositiveSmallIntegerField(default=0)
+    rec_tds = models.PositiveSmallIntegerField(default=0)
+    
+    fumbles = models.PositiveSmallIntegerField(default=0)
+    fumbles_lost = models.PositiveSmallIntegerField(default=0)
+    
+    tackles = models.PositiveSmallIntegerField(default=0)
+    sacks = models.DecimalField(max_digits=3, decimal_places=1, default=Decimal("0"))
+    def_interceptions = models.PositiveSmallIntegerField(default=0)
+    def_tds = models.PositiveSmallIntegerField(default=0)
+    
+    kick_return_tds = models.PositiveSmallIntegerField(default=0)
+    punt_return_tds = models.PositiveSmallIntegerField(default=0)
+    
+    fg_made = models.PositiveSmallIntegerField(default=0)
+    fg_attempts = models.PositiveSmallIntegerField(default=0)
+    xp_made = models.PositiveSmallIntegerField(default=0)
+    xp_attempts = models.PositiveSmallIntegerField(default=0)
+    
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=["game", "player"], name="one_player_per_game")
+        ]
+    
+    def __str__(self):
+        return f"{self.player} - {self.game}"

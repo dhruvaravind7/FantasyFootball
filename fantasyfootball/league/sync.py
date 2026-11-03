@@ -1,10 +1,12 @@
 from datetime import datetime
+from decimal import Decimal
 
 from django.db import transaction
 
+from plays.sync import fingerprint
 from league import espn
 from league.espn import ESPNFormatError
-from league.models import Game, Season, Team, Player
+from league.models import Game, Season, Team, Player, PlayerGameStats
 
 TEAMS = {
     "SEA": (Team.Conference.NFC, Team.Division.WEST),
@@ -62,6 +64,18 @@ INJURY_MAP = {
     "Doubtful": Player.InjuryStatus.DOUBTFUL,
     "Out": Player.InjuryStatus.OUT,
     "Suspension": ""
+}
+
+STAT_FIELDS = {
+    "passing": {"C/ATT": ("pass_completions", "pass_attempts"), "YDS": "pass_yards", "TD": "pass_tds", "INT": "interceptions_thrown"},
+    "rushing": {"CAR": 'rush_attempts', "YDS": "rush_yards", "TD": "rush_tds"},
+    "receiving": {"REC": "receptions", "TGTS": "targets", "YDS": "rec_yards", "TD": "rec_tds"},
+    "fumbles": {"FUM": "fumbles", "LOST": "fumbles_lost"},
+    "defensive": {'TOT': "tackles", 'SACKS': "sacks", "TD": "def_tds"},
+    "interceptions": {'INT': "def_interceptions"},
+    "kickReturns": {"TD": "kick_return_tds"},
+    "puntReturns": {"TD": "punt_return_tds"},
+    "kicking": {"FG": ("fg_made", "fg_attempts"), "XP": ("xp_made", "xp_attempts")}
 }
 
 @transaction.atomic
@@ -161,3 +175,44 @@ def sync_players():
             synced_players.append(player)
     Player.objects.exclude(espn_id__in=seen_ids).update(team=None, roster_status="")
     return synced_players
+
+@transaction.atomic
+def sync_box_score(game: Game) -> dict:
+    lines = {}
+    for team_block in espn.fetch_box_score(game.espn_id):
+        team_id = team_block["team"]["id"]
+        for category in team_block["statistics"]:
+            fields = STAT_FIELDS.get(category["name"])
+            if fields is None:
+                continue
+            for athlete in category["athletes"]:
+                stats = dict(zip(category["labels"], athlete["stats"]))
+                line = lines.setdefault(athlete["athlete"]["id"], {"team": team_id})
+                for label, field in fields.items():
+                    value = stats[label]
+                    if isinstance(field, tuple):
+                        made, attempts = value.split("/")
+                        line[field[0]] = int(made)
+                        line[field[1]] = int(attempts)
+                    elif field == "sacks":
+                        line[field] = Decimal(value)
+                    else:
+                        line[field] = int(value)
+    players = {p.espn_id: p for p in Player.objects.filter(espn_id__in=lines)}
+    teams = {t.espn_id: t for t in Team.objects.all()}
+    existing = dict(
+        PlayerGameStats.objects.filter(game=game).values_list("player__espn_id", "espn_hash")
+    )
+    written = unchanged = 0
+    for espn_id, line in lines.items():
+        h = fingerprint({k: str(v) for k, v in line.items()})
+        if existing.get(espn_id) == h:
+            unchanged += 1
+            continue
+
+        if espn_id not in players:
+            raise ESPNFormatError(f"Box score for {game} has athlete {espn_id}, who isn't in our system")
+        stats = {k: v for k, v in line.items() if k != "team"}
+        PlayerGameStats.objects.update_or_create(game=game, player=players[espn_id], defaults={"team": teams[line["team"]], "espn_hash": h, **stats})
+        written += 1
+    return {"written": written, "unchanged": unchanged}

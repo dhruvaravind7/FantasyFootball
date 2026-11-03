@@ -133,6 +133,9 @@ def achieved_first_down(play: dict) -> bool:
 def play_type_for(play: dict) -> str:
     """Turn ESPN's play type into ours. Fumbles don't say what kind of play they
     happened on, so look at who was involved."""
+    if "No Play" in play["text"]:
+        return Play.PlayType.NO_PLAY
+        
     espn_type = play["type"]["text"]
     if espn_type in FUMBLE_TYPES:
         roles = {participant["type"] for participant in play.get("participants", [])}

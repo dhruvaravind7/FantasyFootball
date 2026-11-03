@@ -4,6 +4,7 @@ from league import sync
 from league.espn import ESPNFormatError
 from league.models import Game
 from plays.sync import sync_game
+from league.sync import sync_box_score
 
 class Command(BaseCommand):
     help = "Load one week's games and the plays of every game that has started"
@@ -19,7 +20,9 @@ class Command(BaseCommand):
                 if game.status == Game.Status.SCHEDULED:     # nothing to load until kickoff
                     continue
                 counts = sync_game(game)
+                box_counts = sync_box_score(game)
                 self.stdout.write(f"{game}: {counts['drives']} drives, {counts['plays']} plays, {counts['events']} events, {counts['skipped']} skipped, {counts['unchanged']} unchanged, {counts['deleted']} deleted")
+                self.stdout.write(f"{game}: {box_counts["written"]} lines written, {box_counts["unchanged"]} lines unchanged")
         except ESPNFormatError as e:
             raise CommandError(str(e))
 

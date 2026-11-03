@@ -6,7 +6,7 @@ from django.core.management.base import BaseCommand
 
 from league.espn import ESPNFormatError
 from league.models import Game
-from league.sync import sync_scoreboard
+from league.sync import sync_scoreboard, sync_box_score
 from plays.models import SyncError
 from plays.sync import sync_game
 
@@ -62,13 +62,17 @@ class Command(BaseCommand):
                 logger.warning("%s is missing from week %s of the scoreboard", game, game.week)
             elif fresh.status != Game.Status.SCHEDULED:
                 to_sync.append(fresh)
-            
+        unrecorded = set(Game.objects.filter(id__in=scoreboard_ids, status=Game.Status.FINAL, drives__isnull=True).values_list("id", flat=True))    
+        queued = {g.id for g in to_sync}
+        to_sync += [g for g in games if g.id in unrecorded and g.id not in queued]   
+        
         paused = set(SyncError.objects.filter(resolved=False).values_list("game_id", flat=True))
         to_sync = [g for g in to_sync if g.id not in paused]
         
         for game in to_sync:
             try:
                 counts = sync_game(game)
+                box_counts = sync_box_score(game)
                 self.stdout.write(
                     f"{game}  {game.get_status_display()}  "
                     f"{game.away_team.abbreviation} {game.away_score} - {game.home_score} {game.home_team.abbreviation}  "

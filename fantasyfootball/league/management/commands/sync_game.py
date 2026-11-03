@@ -3,6 +3,7 @@ from django.core.management.base import BaseCommand, CommandError
 from league.espn import ESPNFormatError
 from league.models import Game
 from plays.sync import sync_game
+from league.sync import sync_box_score
 
 
 class Command(BaseCommand):
@@ -15,7 +16,9 @@ class Command(BaseCommand):
         game = Game.objects.select_related("home_team", "away_team").get(espn_id=options["game_id"])
         try:
             counts = sync_game(game)
+            box_counts = sync_box_score(game)
         except ESPNFormatError as e:
             raise CommandError(str(e))
         
         self.stdout.write(f"{game}: {counts["drives"]} drives, {counts["plays"]} plays, {counts["events"]} events, {counts["skipped"]} skipped, {counts["unchanged"]} unchanged, {counts["deleted"]} deleted")
+        self.stdout.write(f"{game}: {box_counts["written"]} lines written, {box_counts["unchanged"]} lines unchanged")
