@@ -26,6 +26,12 @@ class LeagueSerializer(serializers.ModelSerializer):
     def validate_size(self, value):
         if value % 2 != 0 or value < 4 or value > 14:
             raise ValidationError("Must be an even number from 4-14")
+
+        if self.instance is not None:
+            count = self.instance.teams.count()
+            if value < count:
+                raise ValidationError(f"This league already has {count} teams.")
+        
         return value
 
     @transaction.atomic
@@ -39,3 +45,8 @@ class JoinSerializer(serializers.Serializer):
     invite_code = serializers.CharField(max_length=8)
     team_name = serializers.CharField(max_length=40)
     
+class UsernameSerializer(serializers.Serializer):
+    username = serializers.CharField()
+    
+class TeamIdSerializer(serializers.Serializer):
+    team_id = serializers.IntegerField()

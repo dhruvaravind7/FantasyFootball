@@ -3,26 +3,42 @@ from rest_framework.decorators import action
 from rest_framework.exceptions import NotFound, ValidationError
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
+from .permissions import IsCommissionerOrReadOnly
+
 
 from league.models import Season
 
 from .models import League
-from .serializers import JoinSerializer, LeagueSerializer
+from .serializers import JoinSerializer, LeagueSerializer, TeamIdSerializer, UsernameSerializer
 
 
 class LeagueViewSet(viewsets.ModelViewSet):
     serializer_class = LeagueSerializer
-    permission_classes = [IsAuthenticated]
-    http_method_names = ["get", "post", "head", "options"]
+    permission_classes = [IsAuthenticated, IsCommissionerOrReadOnly]
+    http_method_names = ["get", "post", "patch", "delete", "head", "options"]
 
     def get_queryset(self):
         return (
             League.objects.filter(teams__owner=self.request.user).select_related("commissioner").prefetch_related("teams__owner").order_by("-created_at")                                    # newest first ("-" means descending)
         )
-
+    
     def perform_create(self, serializer):
         season = Season.objects.order_by("-year").first()      # the newest season
         serializer.save(commissioner=self.request.user, season=season)
+    
+    def require_setup(self, league, doing):
+        """Stop with a 400 unless the league hasn't drafted yet. `doing` fills in the message."""
+        if league.status != League.Status.SETUP:
+            raise ValidationError({"detail": f"You can't {doing} after the draft."})
+    
+    def perform_update(self, serializer):
+        self.require_setup(serializer.instance, "change settings")
+        serializer.save()
+
+    def perform_destroy(self, instance):
+        self.require_setup(instance, "delete the league")
+        instance.delete()
+
     
     @action(detail=False, methods=["post"])
     def join(self, request):
@@ -45,3 +61,42 @@ class LeagueViewSet(viewsets.ModelViewSet):
         
         league.teams.create(name=team_name, owner=request.user)
         return Response(LeagueSerializer(league).data, status=status.HTTP_201_CREATED)
+    
+    @action(detail=True, methods=["post"], permission_classes=[IsAuthenticated])
+    def leave(self, request, pk=None):
+        league = self.get_object()                       # 404 if you're not in it
+        self.require_setup(league, "leave")
+        if league.commissioner == request.user:
+            raise ValidationError({"detail": "Make someone else commissioner before you leave."})
+        league.teams.filter(owner=request.user).delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)     # 204 = done, nothing to send back
+    
+    @action(detail=True, methods=["post"])
+    def transfer(self, request, pk=None):
+        league = self.get_object()                       # runs the commissioner check (403 for others)
+        serializer = UsernameSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        # Their team in this league. owner__username follows the owner link to its username, like team__abbreviation
+        team = league.teams.filter(owner__username=serializer.validated_data["username"]).select_related("owner").first()
+        if team is None:
+            raise ValidationError({"username": "That user doesn't have a team in this league."})
+        league.commissioner = team.owner
+        league.save()
+        return Response(LeagueSerializer(league).data)
+    
+    @action(detail=True, methods=["post"], url_path="remove-team")
+    def remove_team(self, request, pk=None):
+        league = self.get_object()
+        self.require_setup(league, "remove teams")
+        serializer = TeamIdSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        team = league.teams.filter(id=serializer.validated_data["team_id"]).first()
+        if team is None:
+            raise ValidationError({"team_id": "No team with that id in this league."})
+        if team.owner == league.commissioner:
+            raise ValidationError({"team_id": "You can't remove your own team."})
+        
+        team.delete()
+        return Response(LeagueSerializer(self.get_object()).data)
