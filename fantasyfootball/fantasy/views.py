@@ -3,13 +3,12 @@ from rest_framework.decorators import action
 from rest_framework.exceptions import NotFound, ValidationError
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
-from .permissions import IsCommissionerOrReadOnly
-
 
 from league.models import Season
 
-from .models import League
-from .serializers import JoinSerializer, LeagueSerializer, TeamIdSerializer, UsernameSerializer
+from .models import FantasyTeam, League
+from .permissions import IsCommissionerOrReadOnly, IsOwnerOrCommissioner
+from .serializers import FantasyTeamSerializer, JoinSerializer, LeagueSerializer, TeamIdSerializer, UsernameSerializer
 
 
 class LeagueViewSet(viewsets.ModelViewSet):
@@ -100,3 +99,20 @@ class LeagueViewSet(viewsets.ModelViewSet):
         
         team.delete()
         return Response(LeagueSerializer(self.get_object()).data)
+    
+class FantasyTeamViewSet(viewsets.ModelViewSet):
+    serializer_class = FantasyTeamSerializer
+    permission_classes = [IsAuthenticated, IsOwnerOrCommissioner]
+    http_method_names = ["get", "patch", "head", "options"]
+    
+    def get_queryset(self):
+        queryset = FantasyTeam.objects.filter(league__teams__owner=self.request.user).select_related("league", "owner").order_by("id")
+        league = self.request.query_params.get("league")
+        if league is not None:
+            if not league.isdigit():
+                raise ValidationError({"league": "Must be a number"})
+            queryset = queryset.filter(league_id=league)
+        
+        return (
+            queryset
+        )

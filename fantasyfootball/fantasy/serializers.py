@@ -10,6 +10,12 @@ class FantasyTeamSerializer(serializers.ModelSerializer):
     class Meta:
         model = FantasyTeam
         fields = ["id", "name", "owner"]
+    
+    def validate_name(self, value):
+        taken = FantasyTeam.objects.filter(league=self.instance.league, name__iexact=value).exclude(pk=self.instance.pk)
+        if taken.exists():
+            raise ValidationError("Another team in this league already has that name.")
+        return value
 
 class LeagueSerializer(serializers.ModelSerializer):
     commissioner = serializers.CharField(source="commissioner.username", read_only=True)
@@ -47,6 +53,6 @@ class JoinSerializer(serializers.Serializer):
     
 class UsernameSerializer(serializers.Serializer):
     username = serializers.CharField()
-    
+
 class TeamIdSerializer(serializers.Serializer):
     team_id = serializers.IntegerField()
