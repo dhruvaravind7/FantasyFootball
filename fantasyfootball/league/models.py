@@ -107,7 +107,28 @@ class Game(models.Model):
 
     def __str__(self):
         return f"Week {self.week}: {self.away_team} @ {self.home_team}"
-    
+
+class TeamGameStats(models.Model):
+    """A team's defense and special teams line for one game, for D/ST fantasy scoring."""
+    game = models.ForeignKey(Game, on_delete=models.CASCADE, related_name="team_stats")
+    team = models.ForeignKey(Team, on_delete=models.CASCADE, related_name="game_stats")
+
+    points_allowed = models.PositiveSmallIntegerField(default=0)
+    sacks = models.PositiveSmallIntegerField(default=0)
+    interceptions = models.PositiveSmallIntegerField(default=0)
+    fumble_recoveries = models.PositiveSmallIntegerField(default=0)
+    tds = models.PositiveSmallIntegerField(default=0)
+    safeties = models.PositiveSmallIntegerField(default=0)
+    blocked_kicks = models.PositiveSmallIntegerField(default=0)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=["game", "team"], name="one_line_per_team_per_game")
+        ]
+
+    def __str__(self):
+        return f"{self.team.abbreviation} D/ST - {self.game}"
+
 class PlayerGameStats(models.Model):
     """A player's official stat line for one game, copied from ESPN's box score."""
     

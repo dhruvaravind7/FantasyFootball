@@ -6,7 +6,12 @@ from django.db import transaction
 from plays.sync import fingerprint
 from league import espn
 from league.espn import ESPNFormatError
-from league.models import Game, Season, Team, Player, PlayerGameStats
+from league.models import Game, Season, Team, Player, PlayerGameStats, TeamGameStats
+from plays.models import Play
+
+# A TD is only "offensive" if it was a run or pass by the team that had the ball
+OFFENSE_PLAY_TYPES = {Play.PlayType.RUN, Play.PlayType.PASS}
+BLOCKED_KICK_TYPES = {"Blocked Field Goal", "Blocked Punt", "Blocked Punt Touchdown", "Blocked Field Goal Touchdown"}
 
 TEAMS = {
     "SEA": (Team.Conference.NFC, Team.Division.WEST),
@@ -177,9 +182,71 @@ def sync_players():
     return synced_players
 
 @transaction.atomic
+def sync_team_stats(game: Game, summary: dict) -> None:
+    home, away = game.home_team.espn_id, game.away_team.espn_id
+    opponent = {home: away, away: home}                   # opponent[home] is away, and the other way round
+    plays = {p.espn_id: p for p in Play.objects.filter(drive__game=game).select_related("drive__offense")}
+
+    # Running totals for each team, filled in below
+    lines = {tid: {"tds": 0, "safeties": 0, "blocked_kicks": 0} for tid in (home, away)}
+    non_offense_points = {home: 0, away: 0}               # points a team scored WITHOUT its offense
+    previous = {home: 0, away: 0}
+
+    # Stages 1 and 2: each scoring play
+    for scoring_play in summary["scoringPlays"]:
+        scorer = scoring_play["team"]["id"]
+        score = {home: scoring_play["homeScore"], away: scoring_play["awayScore"]}
+        points = score[scorer] - previous[scorer]
+        previous = score
+        kind = scoring_play["scoringType"]["abbreviation"]
+
+        if kind == "FG":
+            continue                                       # always the offense
+        if kind == "TD":
+            play = plays.get(scoring_play["id"])
+            if play is None:
+                continue                                   # live: the plays feed hasn't caught up yet, next poll counts it
+            if play.play_type in OFFENSE_PLAY_TYPES and play.drive.offense.espn_id == scorer:
+                continue                                   # a normal offensive TD
+            else:
+                lines[scorer]["tds"] += 1
+                non_offense_points[scorer] += points
+        elif kind in ("SF", "D2P"):
+            non_offense_points[scorer] += points
+            if kind == "SF":
+                lines[scorer]["safeties"] += 1
+        else:
+            raise ESPNFormatError(f"Unknown scoring type {kind!r} in {game}. Add it to sync_team_stats.")
+
+    # Stage 3: blocked kicks. The blocking team is the one NOT kicking (not drive.offense)
+    for play in plays.values():
+        if play.espn_type in BLOCKED_KICK_TYPES:
+            blocker = opponent[play.drive.offense.espn_id]
+            lines[blocker]["blocked_kicks"] += 1
+
+    # Stage 4: the opponent's box score numbers, and points allowed
+    teams = {t["team"]["id"]: {s["name"]: s["displayValue"] for s in t["statistics"]}
+             for t in summary["boxscore"]["teams"]}
+    final_score = {home: game.home_score, away: game.away_score}
+    for tid in (home, away):
+        opp = opponent[tid]
+        line = lines[tid]
+        line["sacks"] = int(teams[opp]["sacksYardsLost"].split("-")[0])     # "2-5" -> "2" -> 2
+        line["interceptions"] = int(teams[opp]["interceptions"])
+        line["fumble_recoveries"] = int(teams[opp]["fumblesLost"])
+        line["points_allowed"] = final_score[opp] - non_offense_points[opp]
+
+        TeamGameStats.objects.update_or_create(
+            game=game,
+            team = game.home_team if tid == home else game.away_team,
+            defaults=line
+        )
+
+@transaction.atomic
 def sync_box_score(game: Game) -> dict:
     lines = {}
-    for team_block in espn.fetch_box_score(game.espn_id):
+    summary = espn.fetch_summary(game.espn_id)
+    for team_block in summary["boxscore"]["players"]:
         team_id = team_block["team"]["id"]
         for category in team_block["statistics"]:
             fields = STAT_FIELDS.get(category["name"])
@@ -215,4 +282,5 @@ def sync_box_score(game: Game) -> dict:
         stats = {k: v for k, v in line.items() if k != "team"}
         PlayerGameStats.objects.update_or_create(game=game, player=players[espn_id], defaults={"team": teams[line["team"]], "espn_hash": h, **stats})
         written += 1
+    sync_team_stats(game, summary)
     return {"written": written, "unchanged": unchanged}

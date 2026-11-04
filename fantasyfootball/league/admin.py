@@ -1,5 +1,5 @@
 from django.contrib import admin
-from .models import Season, Team, Player, Game, PlayerGameStats
+from .models import Season, Team, Player, Game, PlayerGameStats, TeamGameStats
 
 
 # Register your models here.
@@ -36,3 +36,8 @@ class PlayerGameStatsAdmin(admin.ModelAdmin):
     list_filter = ['game__week', 'team']
     search_fields = ['player__first_name', 'player__last_name']
     list_select_related = ['player', 'team', 'game__home_team', 'game__away_team']
+    
+@admin.register(TeamGameStats)
+class TeamGameStatsAdmin(admin.ModelAdmin):
+    list_display = ["game", "team", "points_allowed"]
+    list_select_related = ["game__home_team", "game__away_team", "team"]

@@ -51,9 +51,8 @@ def fetch_athlete(espn_id: str) -> dict:
     url = f"{CORE}/athletes/{espn_id}"
     return get_json(url)
 
-def fetch_box_score(game_espn_id: str) -> list[dict]:
-    """One block per team, each holding stat categories like passing and rushing."""
+def fetch_summary(game_espn_id: str) -> dict:
+    """ESPN's game summary: box score (players and teams), scoring plays, and more."""
     url = f"{BASE}/summary"
     params = {"event": game_espn_id}
-    data = get_json(url, params=params)
-    return data["boxscore"]['players']
+    return get_json(url, params=params)       # the whole dict, not just ["boxscore"]["players"]
