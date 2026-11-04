@@ -1,8 +1,7 @@
 from rest_framework import serializers
-from .models import League, FantasyTeam
 from django.db import transaction
 from rest_framework.exceptions import ValidationError
-
+from .models import FantasyTeam, League, ScoringRules 
 
 class FantasyTeamSerializer(serializers.ModelSerializer):
     owner = serializers.CharField(source="owner.username", allow_null=True, read_only=True)
@@ -45,6 +44,7 @@ class LeagueSerializer(serializers.ModelSerializer):
         team_name = validated_data.pop("team_name")
         league = League.objects.create(**validated_data)
         FantasyTeam.objects.create(league=league, owner=league.commissioner, name=team_name)
+        ScoringRules.objects.create(league=league)
         return league
 
 class JoinSerializer(serializers.Serializer):
@@ -56,3 +56,11 @@ class UsernameSerializer(serializers.Serializer):
 
 class TeamIdSerializer(serializers.Serializer):
     team_id = serializers.IntegerField()
+    
+class ScoringRulesSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = ScoringRules
+        exclude = ["id", "league"]      
+        
+class PresetSerializer(serializers.Serializer):
+    preset = serializers.ChoiceField(choices=ScoringRules.Preset.choices)  

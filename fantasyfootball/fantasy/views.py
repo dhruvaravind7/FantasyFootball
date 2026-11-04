@@ -4,11 +4,12 @@ from rest_framework.exceptions import NotFound, ValidationError
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
-from league.models import Season
+from django.db import transaction
 
-from .models import FantasyTeam, League
+from league.models import Season
+from .models import FantasyTeam, League, ScoringRules
 from .permissions import IsCommissionerOrReadOnly, IsOwnerOrCommissioner
-from .serializers import FantasyTeamSerializer, JoinSerializer, LeagueSerializer, TeamIdSerializer, UsernameSerializer
+from .serializers import FantasyTeamSerializer, JoinSerializer, LeagueSerializer, TeamIdSerializer, UsernameSerializer, PresetSerializer, ScoringRulesSerializer
 
 
 class LeagueViewSet(viewsets.ModelViewSet):
@@ -100,6 +101,30 @@ class LeagueViewSet(viewsets.ModelViewSet):
         team.delete()
         return Response(LeagueSerializer(self.get_object()).data)
     
+    @action(detail=True, methods=["get", "patch"])
+    def scoring(self, request, pk=None):
+        league = self.get_object()
+        rules, _ = ScoringRules.objects.get_or_create(league=league)
+        if request.method == "PATCH":
+            self.require_setup(league, "change scoring")
+            serializer = ScoringRulesSerializer(rules, data=request.data, partial=True)
+            serializer.is_valid(raise_exception=True)
+            serializer.save()
+        return Response(ScoringRulesSerializer(rules).data)
+    
+    @action(detail=True, methods=["post"], url_path="scoring/preset")
+    def scoring_preset(self, request, pk=None):
+        league = self.get_object()
+        self.require_setup(league, "change scoring")
+        serializer = PresetSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        preset = serializer.validated_data["preset"]
+        with transaction.atomic():
+            ScoringRules.objects.filter(league=league).delete()
+            rules = ScoringRules.objects.create(league=league, reception=ScoringRules.RECEPTION_POINTS[preset])
+        return Response(ScoringRulesSerializer(rules).data)
+    
+
 class FantasyTeamViewSet(viewsets.ModelViewSet):
     serializer_class = FantasyTeamSerializer
     permission_classes = [IsAuthenticated, IsOwnerOrCommissioner]

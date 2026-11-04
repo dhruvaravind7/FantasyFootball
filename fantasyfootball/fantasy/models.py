@@ -1,5 +1,6 @@
 from django.db import models
 from django.conf import settings
+from decimal import Decimal
 from django.db.models import Q
 
 import secrets
@@ -66,4 +67,65 @@ class FantasyTeam(models.Model):
 
     def __str__(self):
         return f"{self.name} ({self.league.name})"
+
+def points(default):
+    """A scoring value like 0.04 or -2. max 999.99, 2 decimal places."""
+    return models.DecimalField(max_digits=5, decimal_places=2, default=Decimal(default))
+
+
+class ScoringRules(models.Model):
+    """How many fantasy points each stat is worth in one league. The defaults are ESPN's PPR."""
+
+    class Preset(models.TextChoices):
+        PPR = "PPR", "PPR"
+        HALF_PPR = "HALF_PPR", "Half-PPR"
+        STANDARD = "STANDARD", "Standard"
+
+    RECEPTION_POINTS = {
+        Preset.PPR: Decimal("1"),
+        Preset.HALF_PPR: Decimal("0.5"),
+        Preset.STANDARD: Decimal("0")
+    }
+
+    league = models.OneToOneField(League, on_delete=models.CASCADE, related_name="scoring")
+
+    # Offense
+    pass_yard = points("0.04")
+    pass_td = points("4")
+    interception = points("-2")
+    rush_yard = points("0.1")
+    rush_td = points("6")
+    reception = points("1")
+    rec_yard = points("0.1")
+    rec_td = points("6")
+    two_point = points("2")
+    fumble_lost = points("-2")
+    return_td = points("6")
+
+    # Kicking
+    fg_0_39 = points("3")
+    fg_40_49 = points("4")
+    fg_50_plus = points("5")
+    fg_missed = points("-1")
+    xp_made = points("1")
+    xp_missed = points("-1")
+
+    # D/ST
+    dst_sack = points("1")
+    dst_interception = points("2")
+    dst_fumble_recovery = points("2")
+    dst_td = points("6")
+    dst_safety = points("2")
+    dst_blocked_kick = points("2")
     
+    pa_0 = points("5")
+    pa_1_6 = points("4")
+    pa_7_13 = points("3")
+    pa_14_17 = points("1")
+    pa_18_27 = points("0")
+    pa_28_34 = points("-1")
+    pa_35_45 = points("-3")
+    pa_46_plus = points("-5")
+    
+    def __str__(self):
+        return f"Scoring for {self.league}"
