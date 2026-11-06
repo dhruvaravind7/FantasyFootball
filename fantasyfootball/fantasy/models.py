@@ -30,6 +30,16 @@ class League(models.Model):
     k_slots = models.PositiveSmallIntegerField(default=1)
     bench_slots = models.PositiveSmallIntegerField(default=7)
     
+    draft_time = models.DateTimeField(null=True, blank=True)
+    pick_seconds = models.PositiveSmallIntegerField(default=90)
+    current_pick = models.PositiveSmallIntegerField(null=True, blank=True)
+    pick_deadline = models.DateTimeField(null=True, blank=True)
+    
+    @property
+    def roster_size(self) -> int:
+        """Spots a team fills in the draft: every starter spot plus bench. IR doesn't count."""
+        return self.qb_slots + self.wr_slots + self.rb_slots + self.te_slots + self.flex_slots + self.dst_slots + self.k_slots + self.bench_slots
+    
     class Meta:
         constraints = [
             models.CheckConstraint(condition=Q(size__in=[4, 6, 8, 10, 12, 14]), name="league_size_even_4_to_14"),
@@ -58,6 +68,7 @@ class FantasyTeam(models.Model):
     owner = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, null=True, blank=True, related_name="fantasy_teams")
     name = models.CharField(max_length=40)
     created_at = models.DateTimeField(auto_now_add=True)
+    draft_position = models.PositiveSmallIntegerField(null=True, blank=True)
     
     class Meta:
         constraints = [
@@ -119,6 +130,44 @@ class PlayerRanking(models.Model):
             models.UniqueConstraint(fields=["league", "player"], name="one_player_per_league"),
             models.UniqueConstraint(fields=["league", "nfl_team"], name="one_defense_per_league"),
             models.UniqueConstraint(fields=["league", "rank"], name="one_rank_per_league")
+        ]
+
+class DraftPick(models.Model):
+    """One pick in a league's draft."""
+    league = models.ForeignKey(League, on_delete=models.CASCADE, related_name="picks")
+    number = models.PositiveSmallIntegerField()          # overall pick: 1, 2, 3...
+    team = models.ForeignKey(FantasyTeam, on_delete=models.CASCADE, related_name="picks")
+    player = models.ForeignKey("league.Player", on_delete=models.PROTECT, related_name="draft_picks", null=True, blank=True)
+    nfl_team = models.ForeignKey("league.Team", on_delete=models.PROTECT, related_name="+", null=True, blank=True)
+    auto = models.BooleanField(default=False)            # True when autopick made it
+    made_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["league", "number"]
+        constraints = [
+            models.CheckConstraint(condition=Q(player__isnull=False, nfl_team__isnull=True) | Q(player__isnull=True, nfl_team__isnull=False),
+                name="draft_pick_player_or_dst",
+            ),
+            models.UniqueConstraint(fields=["league", "number"], name="one_pick_per_league"),
+            models.UniqueConstraint(fields=["league", "player"], name="player_drafted_once_per_league"),
+            models.UniqueConstraint(fields=["league", "nfl_team"], name="defense_drafted_once_per_league")
+        ]
+        
+class DraftQueueEntry(models.Model):
+    """One player or D/ST on a team's draft queue. Lower `order` = picked first."""
+    team = models.ForeignKey(FantasyTeam, on_delete=models.CASCADE, related_name="queue")
+    order = models.PositiveSmallIntegerField()
+    player = models.ForeignKey("league.Player", on_delete=models.CASCADE, related_name="+", null=True, blank=True)
+    nfl_team = models.ForeignKey("league.Team", on_delete=models.CASCADE, related_name="+", null=True, blank=True)
+
+    class Meta:
+        ordering = ["team", "order"]
+        constraints = [
+            models.CheckConstraint(condition=Q(player__isnull=False, nfl_team__isnull=True) | Q(player__isnull=True, nfl_team__isnull=False),
+                name="queue_player_or_dst",
+            ),
+            models.UniqueConstraint(fields=["team", "player"], name="one_player_per_queue"),
+            models.UniqueConstraint(fields=["team", "nfl_team"], name="one_defense_per_queue")
         ]
 
 class ScoringRules(models.Model):
