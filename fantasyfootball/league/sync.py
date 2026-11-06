@@ -88,6 +88,14 @@ def sync_scoreboard(season_year: int | None = None, week: int | None = None) -> 
     data = espn.fetch_scoreboard(season=season_year, week=week)
     season, _ = Season.objects.get_or_create(year=data["season"]["year"])
     week_number = data["week"]["number"]
+
+    # Only a no-arguments call tells us the real current week (otherwise ESPN echoes the week we asked for),
+    # and only regular-season weeks (type 2) count: playoff weeks restart at 1
+    is_current = season_year is None and week is None
+    if is_current and data["season"]["type"] == 2 and season.current_week != week_number:
+        season.current_week = week_number
+        season.save(update_fields=["current_week"])
+
     games = []
     
     for event in data["events"]:

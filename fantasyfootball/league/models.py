@@ -5,7 +5,8 @@ from decimal import Decimal
 class Season(models.Model):
     year = models.IntegerField(unique=True)
     active = models.BooleanField(default=False)
-    
+    current_week = models.PositiveSmallIntegerField(null=True, blank=True)    # ESPN's regular-season week, set by sync_scoreboard
+
     def __str__(self):
         return str(self.year)
 
