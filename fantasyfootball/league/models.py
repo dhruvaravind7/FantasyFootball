@@ -165,6 +165,11 @@ class PlayerGameStats(models.Model):
     kick_return_tds = models.PositiveSmallIntegerField(default=0)
     punt_return_tds = models.PositiveSmallIntegerField(default=0)
     
+    fg_made_0_39 = models.PositiveSmallIntegerField(default=0)
+    fg_made_40_49 = models.PositiveSmallIntegerField(default=0)
+    fg_made_50_plus = models.PositiveSmallIntegerField(default=0)
+    two_point_conversions = models.PositiveSmallIntegerField(default=0)
+    
     fg_made = models.PositiveSmallIntegerField(default=0)
     fg_attempts = models.PositiveSmallIntegerField(default=0)
     xp_made = models.PositiveSmallIntegerField(default=0)
