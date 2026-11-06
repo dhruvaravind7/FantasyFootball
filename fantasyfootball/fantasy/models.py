@@ -100,6 +100,27 @@ def points(default):
     """A scoring value like 0.04 or -2. max 999.99, 2 decimal places."""
     return models.DecimalField(max_digits=5, decimal_places=2, default=Decimal(default))
 
+class PlayerRanking(models.Model):
+    """One league's preseason ranking of every draftable player and D/ST. Built when the draft starts."""
+    league = models.ForeignKey(League, on_delete=models.CASCADE, related_name="rankings")
+    rank = models.PositiveIntegerField()
+    position = models.CharField(max_length=3)        # QB, RB, WR, TE, PK or DST
+    player = models.ForeignKey("league.Player", on_delete=models.CASCADE, related_name="ranking", null=True, blank=True)
+    nfl_team = models.ForeignKey("league.Team", on_delete=models.CASCADE, related_name="+", null=True, blank=True)
+    points_per_game = models.DecimalField(max_digits=6, decimal_places=2, null=True, blank=True)    # None = no history
+    value = models.DecimalField(max_digits=6, decimal_places=2, null=True, blank=True)              # over replacement
+
+    class Meta:
+        ordering = ["league", "rank"]
+        constraints = [
+            models.CheckConstraint(condition=Q(player__isnull=False, nfl_team__isnull=True) | Q(player__isnull=True, nfl_team__isnull=False),
+                name="ranking_player_or_dst_not_both",
+            ),
+            models.UniqueConstraint(fields=["league", "player"], name="one_player_per_league"),
+            models.UniqueConstraint(fields=["league", "nfl_team"], name="one_defense_per_league"),
+            models.UniqueConstraint(fields=["league", "rank"], name="one_rank_per_league")
+        ]
+
 class ScoringRules(models.Model):
     """How many fantasy points each stat is worth in one league. The defaults are ESPN's PPR."""
 

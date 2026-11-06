@@ -64,15 +64,16 @@ def bridge_gsis_ids() -> int:
     changed_players = []
     
     for row in fetch_csv("players/players.csv"):
+        pick = int(row["draft_pick"]) if row["draft_pick"] != "" else None
         if row["espn_id"] != "" and row["gsis_id"] != "":
-            players_dict[row["espn_id"]] = row["gsis_id"]
+            players_dict[row["espn_id"]] = (row["gsis_id"], pick)
     
     for player in Player.objects.all():
         if player.espn_id in players_dict:
-            player.gsis_id = players_dict[player.espn_id]
+            player.gsis_id, player.nfl_draft_pick = players_dict[player.espn_id]
             changed_players.append(player)
     
-    Player.objects.bulk_update(changed_players, ["gsis_id"])
+    Player.objects.bulk_update(changed_players, ["gsis_id", "nfl_draft_pick"])
     return len(changed_players)
 
 def import_player_stats(season_year: int, games: dict[str, Game]) -> tuple[int, int]:
