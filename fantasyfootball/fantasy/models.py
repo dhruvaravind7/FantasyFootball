@@ -68,10 +68,37 @@ class FantasyTeam(models.Model):
     def __str__(self):
         return f"{self.name} ({self.league.name})"
 
+class RosterEntry(models.Model):
+    class Slot(models.TextChoices):
+        QB = "QB", "Quarterback"
+        RB = "RB", "Running Back"
+        WR = "WR", "Wide Receiver"
+        TE = "TE", "Tight End"
+        FLEX = "FLEX", "Flex"
+        DST = "DST", "Defense"
+        K = "K", "Kicker"
+        BENCH = "BENCH", "Bench"
+        IR = "IR", "Injured Reserve"
+        
+    team = models.ForeignKey(FantasyTeam, on_delete=models.CASCADE, related_name="roster")
+    league = models.ForeignKey(League, on_delete=models.CASCADE, related_name="+")
+    week = models.PositiveSmallIntegerField()
+    player = models.ForeignKey("league.Player", on_delete=models.PROTECT, related_name="rosters", null=True, blank=True)       # Player and not D/ST
+    nfl_team = models.ForeignKey("league.Team", on_delete=models.PROTECT, null=True, blank=True, related_name="+")                                # D/ST and not Player
+    slot = models.CharField(choices=Slot.choices, max_length=5, default=Slot.BENCH)                                 # Which slot the person/team is in 
+    
+    class Meta:
+        constraints = [
+            models.CheckConstraint(condition=Q(player__isnull=False, nfl_team__isnull=True) | Q(player__isnull=True, nfl_team__isnull=False),
+                name="player_or_dst_not_both",
+            ),
+            models.UniqueConstraint(fields=["league", "week", "player"], name="one_player_per_week_per_league"),
+            models.UniqueConstraint(fields=["league", "week", "nfl_team"], name="one_defense_per_week_per_league")
+        ]
+
 def points(default):
     """A scoring value like 0.04 or -2. max 999.99, 2 decimal places."""
     return models.DecimalField(max_digits=5, decimal_places=2, default=Decimal(default))
-
 
 class ScoringRules(models.Model):
     """How many fantasy points each stat is worth in one league. The defaults are ESPN's PPR."""

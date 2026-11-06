@@ -1,7 +1,9 @@
 from rest_framework import serializers
 from django.db import transaction
 from rest_framework.exceptions import ValidationError
-from .models import FantasyTeam, League, ScoringRules 
+from league.serializers import PlayerSerializer
+
+from .models import FantasyTeam, League, ScoringRules, RosterEntry
 
 class FantasyTeamSerializer(serializers.ModelSerializer):
     owner = serializers.CharField(source="owner.username", allow_null=True, read_only=True)
@@ -64,3 +66,12 @@ class ScoringRulesSerializer(serializers.ModelSerializer):
         
 class PresetSerializer(serializers.Serializer):
     preset = serializers.ChoiceField(choices=ScoringRules.Preset.choices)  
+    
+class RosterEntrySerializer(serializers.ModelSerializer):
+    """One roster spot: a player or a D/ST, and which slot it's in that week."""
+    player = PlayerSerializer(read_only=True)        # null on D/ST rows
+    dst = serializers.CharField(source="nfl_team.abbreviation", allow_null=True, read_only=True)    # null on player rows
+
+    class Meta:
+        model = RosterEntry
+        fields = ["id", "week", "slot", "player", "dst"]

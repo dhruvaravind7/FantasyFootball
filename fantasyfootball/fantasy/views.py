@@ -9,7 +9,9 @@ from django.db import transaction
 from league.models import Season
 from .models import FantasyTeam, League, ScoringRules
 from .permissions import IsCommissionerOrReadOnly, IsOwnerOrCommissioner
-from .serializers import FantasyTeamSerializer, JoinSerializer, LeagueSerializer, TeamIdSerializer, UsernameSerializer, PresetSerializer, ScoringRulesSerializer
+from .rosters import ensure_week
+from .serializers import (FantasyTeamSerializer, JoinSerializer, LeagueSerializer, PresetSerializer, RosterEntrySerializer,
+                          ScoringRulesSerializer, TeamIdSerializer, UsernameSerializer)
 
 
 class LeagueViewSet(viewsets.ModelViewSet):
@@ -131,7 +133,7 @@ class FantasyTeamViewSet(viewsets.ModelViewSet):
     http_method_names = ["get", "patch", "head", "options"]
     
     def get_queryset(self):
-        queryset = FantasyTeam.objects.filter(league__teams__owner=self.request.user).select_related("league", "owner").order_by("id")
+        queryset = FantasyTeam.objects.filter(league__teams__owner=self.request.user).select_related("league__season", "owner").order_by("id")
         league = self.request.query_params.get("league")
         if league is not None:
             if not league.isdigit():
@@ -141,3 +143,23 @@ class FantasyTeamViewSet(viewsets.ModelViewSet):
         return (
             queryset
         )
+
+    @action(detail=True)
+    def roster(self, request, pk=None):
+        team = self.get_object()
+        current_week = team.league.season.current_week
+
+        week = request.query_params.get("week")
+        if week is None:
+            week = current_week
+        elif week.isdigit():
+            week = int(week)            # query params are strings, and "9" != 9
+        else:
+            raise ValidationError({"week": "Must be a number"})
+
+        # Only the current week rolls forward: past weeks are history, and future weeks would copy today's roster too early
+        if week is not None and week == current_week:
+            ensure_week(team, week)
+
+        entries = team.roster.filter(week=week).select_related("player__team", "nfl_team").order_by("id")
+        return Response(RosterEntrySerializer(entries, many=True).data)
