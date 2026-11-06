@@ -1,12 +1,49 @@
 import random
+from collections import Counter
 from datetime import timedelta
 
 from django.db import transaction
 from django.utils import timezone
 from rest_framework.exceptions import ValidationError
 
-from .models import FantasyTeam, League
-from .rankings import build_rankings
+from .models import DraftPick, DraftQueueEntry, FantasyTeam, League, RosterEntry
+from .rankings import FANTASY_POSITIONS, build_rankings
+
+POSITION_LIMITS = {"QB": 4, "RB": 8, "WR": 8, "TE": 3, "PK": 3, "DST": 3}
+FLEX_POSITIONS = {"RB", "WR", "TE"}
+SLOT_FOR_POSITION = {"QB": "QB", "RB": "RB", "WR": "WR", "TE": "TE", "PK": "K", "DST": "DST"}    # roster slot names
+
+
+def starter_slots(league) -> dict:
+    """How many starting spots each position has in this league (not counting FLEX)."""
+    return {"QB": league.qb_slots, "RB": league.rb_slots, "WR": league.wr_slots, "TE": league.te_slots, "PK": league.k_slots, "DST": league.dst_slots}
+
+
+def pick_position(pick) -> str:
+    """'DST' for a D/ST pick, otherwise the player's position."""
+    return "DST" if pick.nfl_team_id else pick.player.position
+
+
+def team_on_clock(league):
+    """The FantasyTeam whose turn it is."""
+    position = draft_position_on_clock(league.current_pick, league.size)
+    return league.teams.get(draft_position=position)
+
+
+def position_counts(team) -> Counter:
+    """{"QB": 1, "RB": 3, ...} for this team's picks so far."""
+    return Counter(pick_position(p) for p in team.picks.select_related("player"))
+
+def fills_starter(position: str, counts: Counter, league) -> bool:
+    """Would one more `position` fill an empty starting spot, either his own position's or FLEX?"""
+    slots = starter_slots(league)
+    if counts[position] < slots[position]:
+        return True
+    if position in FLEX_POSITIONS:
+
+        flex_used = sum(max(0, counts[p] - slots[p]) for p in FLEX_POSITIONS)
+        return True if flex_used < league.flex_slots else False
+    return False
 
 def draft_position_on_clock(pick: int, teams: int) -> int:
     """Which draft position (1-based) makes overall pick `pick` in a snake draft with `teams` teams."""
@@ -57,3 +94,112 @@ def start_draft(league: League) -> None:
     league.current_pick = 1
     league.pick_deadline = timezone.now() + timedelta(seconds=league.pick_seconds)
     league.save()
+
+@transaction.atomic
+def make_pick(league, team, player=None, nfl_team=None, auto=False):
+    """Make the current pick for `team`. Every pick goes through here: a person, the queue, or autopick."""
+    league = League.objects.select_for_update().get(pk=league.pk)
+
+    # 1. The league must be drafting, and it must be this team's turn
+    if league.status != League.Status.DRAFTING:
+        raise ValidationError({"detail": "The league is not drafting right now"})
+    if team != team_on_clock(league):
+        raise ValidationError({"detail": "It is not your turn to draft"})
+
+    # 2. Exactly one of player / nfl_team. (player is None) == (nfl_team is None) is True when both or neither were given.
+    if (player is None) == (nfl_team is None):
+        raise ValidationError({"detail": "Pick exactly one player or D/ST."})
+    
+    # 3. Available and allowed
+    if player is not None:
+        if player.position not in FANTASY_POSITIONS or player.team_id is None:
+            raise ValidationError({"detail": "That player can't be drafted."})
+        if DraftPick.objects.filter(league=league, player=player).exists():
+            raise ValidationError({"detail": "Already drafted"})
+        position = player.position
+    else:
+        if DraftPick.objects.filter(league=league, nfl_team=nfl_team).exists():
+            raise ValidationError({"detail": "Already drafted"})
+        position = "DST"
+
+    # 4. Position limit
+    if position_counts(team)[position] >= POSITION_LIMITS[position]:
+        raise ValidationError({"detail": f"You already have the most {position}s allowed ({POSITION_LIMITS[position]})."})
+
+    # 5. Save the pick (number = the pick on the clock)
+    pick = DraftPick.objects.create(league=league, number=league.current_pick, team=team, player=player, nfl_team=nfl_team, auto=auto)
+
+    # 6. He's gone, so take him off EVERY team's queue in this league
+    #    (team__league=league filters queue entries across the team link)
+    if player is not None:
+        DraftQueueEntry.objects.filter(team__league=league, player=player).delete()
+    else:
+        DraftQueueEntry.objects.filter(team__league=league, nfl_team=nfl_team).delete()
+
+    # 7. Last pick → finish. Otherwise the next pick goes on the clock with a fresh deadline.
+    if league.current_pick >= league.size * league.roster_size:
+        finish_draft(league)
+    else:
+        league.current_pick += 1
+        league.pick_deadline = timezone.now() + timedelta(seconds=league.pick_seconds)
+        league.save(update_fields=["current_pick", "pick_deadline"])
+    return pick
+
+def autopick(league, team):
+    """Pick for `team`: its queue first, then the best player for an empty starting spot, then best available."""
+    counts = position_counts(team)
+
+    # 1. Queue
+    for entry in team.queue.select_related("player"):
+        position = "DST" if entry.nfl_team_id else entry.player.position
+        if counts[position] < POSITION_LIMITS[position]:
+            return make_pick(league, team, player=entry.player, nfl_team=entry.nfl_team, auto=True)
+
+    # Everyone not drafted yet, best rank first
+    taken_players = set(league.picks.exclude(player=None).values_list("player_id", flat=True))
+    taken_teams = set(league.picks.exclude(nfl_team=None).values_list("nfl_team_id", flat=True))
+    available = [
+        r for r in league.rankings.select_related("player", "nfl_team")
+        if (r.player_id not in taken_players if r.player_id else r.nfl_team_id not in taken_teams)
+    ]
+
+    # 2. Starters
+    for r in available:
+        if fills_starter(r.position, counts, league):
+            return make_pick(league, team, player=r.player, nfl_team=r.nfl_team, auto=True)
+
+    # 3. Best available (never a 2nd K or D/ST)
+    for r in available:
+        if r.position in ("PK", "DST") and counts[r.position] > 0:
+            continue
+        if counts[r.position] < POSITION_LIMITS[r.position]:
+            return make_pick(league, team, player=r.player, nfl_team=r.nfl_team, auto=True)
+
+    raise ValidationError({"detail": "No player left to autopick."})
+
+def finish_draft(league):
+    """Fill every roster from the draft (starters first, in draft order) and start the season."""
+    week = league.season.current_week or 1
+    entries = []
+    for team in league.teams.all():
+        counts = Counter()
+        slots = starter_slots(league)
+        flex_left = league.flex_slots
+        for pick in team.picks.select_related("player").order_by("number"):
+            position = pick_position(pick)
+            if counts[position] < slots[position]:
+                slot = SLOT_FOR_POSITION[position]
+            elif position in FLEX_POSITIONS and flex_left > 0:
+                slot = RosterEntry.Slot.FLEX
+                flex_left -= 1
+            else:
+                slot = RosterEntry.Slot.BENCH
+            counts[position] += 1
+            entries.append(RosterEntry(team=team, league=league, week=week,
+                                       player_id=pick.player_id, nfl_team_id=pick.nfl_team_id, slot=slot))
+
+    RosterEntry.objects.bulk_create(entries)
+    league.status = League.Status.IN_SEASON
+    league.current_pick, league.pick_deadline = None, None
+    league.save(update_fields=["status", "current_pick", "pick_deadline"])
+    
