@@ -2,12 +2,14 @@ from datetime import datetime
 from decimal import Decimal
 
 from django.db import transaction
+from django.db.models import Q
 
 from plays.sync import fingerprint
 from league import espn
 from league.espn import ESPNFormatError
 from league.models import Game, Season, Team, Player, PlayerGameStats, TeamGameStats
-from plays.models import Play
+from plays.models import Play, PlayParticipant
+from collections import defaultdict
 
 # A TD is only "offensive" if it was a run or pass by the team that had the ball
 OFFENSE_PLAY_TYPES = {Play.PlayType.RUN, Play.PlayType.PASS}
@@ -82,6 +84,8 @@ STAT_FIELDS = {
     "puntReturns": {"TD": "punt_return_tds"},
     "kicking": {"FG": ("fg_made", "fg_attempts"), "XP": ("xp_made", "xp_attempts")}
 }
+
+PLAY_STAT_FIELDS = ["fg_made_0_39", "fg_made_40_49", "fg_made_50_plus", "two_point_conversions"]
 
 @transaction.atomic
 def sync_scoreboard(season_year: int | None = None, week: int | None = None) -> list[Game]:
@@ -290,5 +294,49 @@ def sync_box_score(game: Game) -> dict:
         stats = {k: v for k, v in line.items() if k != "team"}
         PlayerGameStats.objects.update_or_create(game=game, player=players[espn_id], defaults={"team": teams[line["team"]], "espn_hash": h, **stats})
         written += 1
+    sync_play_stats(game)
     sync_team_stats(game, summary)
     return {"written": written, "unchanged": unchanged}
+
+@transaction.atomic
+def sync_play_stats(game: Game) -> None:
+    """Fill the stat columns the box score doesn't have (FG distance, 2-pt conversions) from our plays."""
+    # Every player starts at 0 for all four fields. defaultdict creates that the first time a player is used.
+    counts = defaultdict(lambda: {field: 0 for field in PLAY_STAT_FIELDS})
+
+    # 1. Made field goals, by distance
+    kicks = PlayParticipant.objects.filter(
+        play__drive__game=game,
+        role=PlayParticipant.Role.KICKER,
+        play__play_type=Play.PlayType.FIELD_GOAL,
+        play__espn_type="Field Goal Good",
+    ).select_related("play")
+    
+    for kick in kicks:
+        distance = kick.play.yardline_100 + 17
+        if distance < 40:
+            counts[kick.player_id]["fg_made_0_39"] += 1
+        elif distance < 50:
+            counts[kick.player_id]["fg_made_40_49"] += 1
+        else:
+            counts[kick.player_id]["fg_made_50_plus"] += 1
+
+    # 2. Successful two-point conversions
+    tries = PlayParticipant.objects.filter(
+        play__drive__game=game,
+        play__pat_points=2,
+        play__pat_type__in=[Play.PatType.TWO_POINT_PASS, Play.PatType.TWO_POINT_RUSH],
+    ).filter(
+        # The scorer always gets credit. The passer only does on a PASS try.
+        Q(role=PlayParticipant.Role.PAT_SCORER) | Q(role=PlayParticipant.Role.PAT_PASSER, play__pat_type=Play.PatType.TWO_POINT_PASS)
+    )
+    
+    for row in tries:
+        counts[row.player_id]["two_point_conversions"] += 1
+
+    # 3. Write all four fields onto EVERY line in this game (players with nothing get 0)
+    lines = list(PlayerGameStats.objects.filter(game=game))
+    for line in lines:
+        for field in PLAY_STAT_FIELDS:
+            setattr(line, field, counts[line.player_id][field])
+    PlayerGameStats.objects.bulk_update(lines, PLAY_STAT_FIELDS)
