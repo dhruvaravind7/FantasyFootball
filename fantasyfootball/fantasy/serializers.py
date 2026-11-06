@@ -1,9 +1,10 @@
+from league.models import Player, Team
 from rest_framework import serializers
 from django.db import transaction
-from rest_framework.exceptions import ValidationError
+from rest_framework.exceptions import ValidationError, NotFound
 from league.serializers import PlayerSerializer
 
-from .models import FantasyTeam, League, ScoringRules, RosterEntry
+from .models import FantasyTeam, League, ScoringRules, RosterEntry, DraftPick, DraftQueueEntry
 
 class FantasyTeamSerializer(serializers.ModelSerializer):
     owner = serializers.CharField(source="owner.username", allow_null=True, read_only=True)
@@ -75,3 +76,48 @@ class RosterEntrySerializer(serializers.ModelSerializer):
     class Meta:
         model = RosterEntry
         fields = ["id", "week", "slot", "player", "dst"]
+
+class DraftPickSerializer(serializers.ModelSerializer):
+    """One pick on the draft board."""
+    team = serializers.CharField(source="team.name", read_only=True)          # the fantasy team's name
+    player = PlayerSerializer(read_only=True)
+    dst = serializers.CharField(source="nfl_team.abbreviation", allow_null=True, read_only=True)
+
+    class Meta:
+        model = DraftPick
+        fields = ["number", "team", "player", "dst", "auto"]
+
+
+class QueueEntrySerializer(serializers.ModelSerializer):
+    """One player or D/ST on a team's queue."""
+    player = PlayerSerializer(read_only=True)
+    dst = serializers.CharField(source="nfl_team.abbreviation", allow_null=True, read_only=True)
+    class Meta:
+        model = DraftQueueEntry
+        fields = ["id", "order", "player", "dst"]
+
+
+class ChoiceSerializer(serializers.Serializer):
+    """Input for picking or queueing: exactly one of player_id / nfl_team_id."""
+    player_id = serializers.IntegerField(required=False)
+    nfl_team_id = serializers.IntegerField(required=False)
+
+    def validate(self, data):
+        # "x" in data is True when that field was sent
+        if ("player_id" in data) == ("nfl_team_id" in data):
+            raise serializers.ValidationError("Send exactly one of player_id or nfl_team_id.")
+        return data
+
+def resolve_choice(data) -> dict:
+    """{"player": Player} or {"nfl_team": Team} from ChoiceSerializer's validated data. 404 if the id doesn't exist."""
+    if "player_id" in data:
+        player = Player.objects.filter(id=data["player_id"]).first()
+        if player is None:
+            raise NotFound("No player with that id.")
+        return {"player": player}
+    
+    if "nfl_team_id" in data:
+        team = Team.objects.filter(id=data["nfl_team_id"]).first()
+        if team is None:
+            raise NotFound("No team with that id")
+        return {"nfl_team": team}

@@ -69,7 +69,7 @@ class FantasyTeam(models.Model):
     name = models.CharField(max_length=40)
     created_at = models.DateTimeField(auto_now_add=True)
     draft_position = models.PositiveSmallIntegerField(null=True, blank=True)
-    
+    autodraft = models.BooleanField(default=False)    
     class Meta:
         constraints = [
             models.UniqueConstraint(fields=["league", "owner"], name="one_team_per_owner_per_league"),

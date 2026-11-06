@@ -1,18 +1,18 @@
-from rest_framework import status, viewsets
+from rest_framework import status, viewsets, mixins
 from rest_framework.decorators import action
-from rest_framework.exceptions import NotFound, ValidationError
+from rest_framework.exceptions import NotFound, ValidationError, PermissionDenied
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
 from django.db import transaction
 
 from league.models import Season
-from .models import FantasyTeam, League, ScoringRules
+from .models import FantasyTeam, League, ScoringRules, DraftQueueEntry
 from .permissions import IsCommissionerOrReadOnly, IsOwnerOrCommissioner
 from .rosters import ensure_week
 from .serializers import (FantasyTeamSerializer, JoinSerializer, LeagueSerializer, PresetSerializer, RosterEntrySerializer,
-                          ScoringRulesSerializer, TeamIdSerializer, UsernameSerializer)
-
+                          ScoringRulesSerializer, TeamIdSerializer, UsernameSerializer, DraftPickSerializer, QueueEntrySerializer, ChoiceSerializer, resolve_choice)
+from .draft import make_pick, team_on_clock
 
 class LeagueViewSet(viewsets.ModelViewSet):
     serializer_class = LeagueSerializer
@@ -126,11 +126,40 @@ class LeagueViewSet(viewsets.ModelViewSet):
             rules = ScoringRules.objects.create(league=league, reception=ScoringRules.RECEPTION_POINTS[preset])
         return Response(ScoringRulesSerializer(rules).data)
     
+    @action(detail=True, permission_classes=[IsAuthenticated])
+    def draft(self, request, pk=None):
+        league = self.get_object()
+        # Only a drafting league has a team on the clock
+        on_clock = team_on_clock(league) if league.status == League.Status.DRAFTING else None
+        picks = league.picks.select_related("team", "player__team", "nfl_team")
+        return Response({
+            "status": league.status,
+            "current_pick": league.current_pick,
+            "pick_deadline": league.pick_deadline,
+            "on_clock": FantasyTeamSerializer(on_clock).data if on_clock else None,
+            "picks": DraftPickSerializer(picks, many=True).data,
+        })
 
-class FantasyTeamViewSet(viewsets.ModelViewSet):
+    @action(detail=True, methods=["post"], url_path="draft/pick", permission_classes=[IsAuthenticated])
+    def draft_pick(self, request, pk=None):
+        league = self.get_object()
+        # YOU: 400 "This league isn't drafting." unless status is DRAFTING
+        #      (team_on_clock crashes on a league that isn't drafting, so this check comes FIRST)
+        if league.status != League.Status.DRAFTING:
+            raise ValidationError({"detail": "This league isn't drafting"})
+        team = team_on_clock(league)
+        if request.user != team.owner and request.user != league.commissioner:
+            raise PermissionDenied("It's not your pick.")          # 403
+        serializer = ChoiceSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        pick = make_pick(league, team, **resolve_choice(serializer.validated_data))
+        return Response(DraftPickSerializer(pick).data, status=status.HTTP_201_CREATED)
+    
+
+class FantasyTeamViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, mixins.UpdateModelMixin, viewsets.GenericViewSet):
     serializer_class = FantasyTeamSerializer
     permission_classes = [IsAuthenticated, IsOwnerOrCommissioner]
-    http_method_names = ["get", "patch", "head", "options"]
+    http_method_names = ["get", "patch", "post", "head", "options"]
     
     def get_queryset(self):
         queryset = FantasyTeam.objects.filter(league__teams__owner=self.request.user).select_related("league__season", "owner").order_by("id")
@@ -144,6 +173,40 @@ class FantasyTeamViewSet(viewsets.ModelViewSet):
             queryset
         )
 
+    def require_owner(self, team):
+        """403 unless the logged-in user owns this team or runs its league. Queues are private."""
+        if self.request.user != team.owner and self.request.user != team.league.commissioner:
+            raise PermissionDenied("Only this team's owner can manage its queue")
+        # YOU: raise PermissionDenied("Only this team's owner can manage its queue.") when neither is true
+    
+    @action(detail=True, methods=["get", "post"])
+    def queue(self, request, pk=None):
+        team = self.get_object()
+        self.require_owner(team)
+        if request.method == "POST":
+            serializer = ChoiceSerializer(data=request.data)
+            serializer.is_valid(raise_exception=True)
+            choice = resolve_choice(serializer.validated_data)
+            if team.league.picks.filter(**choice).exists():
+                raise ValidationError({"detail": "Already Drafted"})
+            # YOU: 400 "Already drafted." if team.league.picks has him
+            #      (.filter(**choice) works for either kind, because choice is {"player": ...} or {"nfl_team": ...})
+            # YOU: 400 "Already in your queue." if team.queue has him
+            if team.queue.filter(**choice).exists():
+                raise ValidationError("Already in your queue")
+            last = team.queue.order_by("-order").values_list("order", flat=True).first() or 0
+            DraftQueueEntry.objects.create(team=team, order=last+1, **choice)      # goes to the end of the queue
+        return Response(QueueEntrySerializer(team.queue.select_related("player__team", "nfl_team"), many=True).data)
+
+    @action(detail=True, methods=["post"], url_path="queue/remove")
+    def queue_remove(self, request, pk=None):
+        team = self.get_object()
+        self.require_owner(team)
+        deleted, _ = team.queue.filter(id=request.data.get("entry_id")).delete()
+        if deleted == 0:
+            raise NotFound("That entry isn't in your queue")
+        return Response(QueueEntrySerializer(team.queue.select_related("player__team", "nfl_team"), many=True).data)
+    
     @action(detail=True)
     def roster(self, request, pk=None):
         team = self.get_object()
@@ -163,3 +226,14 @@ class FantasyTeamViewSet(viewsets.ModelViewSet):
 
         entries = team.roster.filter(week=week).select_related("player__team", "nfl_team").order_by("id")
         return Response(RosterEntrySerializer(entries, many=True).data)
+    
+    @action(detail=True, methods=["post"])
+    def autodraft(self, request, pk=None):
+        team = self.get_object()          # PATCH-style rule: owner or commissioner (your IsOwnerOrCommissioner)
+        on = request.data.get("on")
+        if not isinstance(on, bool):      # JSON true/false arrive as Python True/False
+            raise ValidationError({"on": "Must be true or false."})
+        team.autodraft = on
+        team.save(update_fields = ["autodraft"])
+        return Response({"autodraft": team.autodraft})
+        # YOU: set team.autodraft, save with update_fields, return {"autodraft": team.autodraft}
