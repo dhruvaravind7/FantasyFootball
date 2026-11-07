@@ -13,11 +13,11 @@ from .rosters import ensure_week
 from .lineups import move
 from .serializers import (FantasyTeamSerializer, JoinSerializer, LeagueSerializer, PresetSerializer, RosterEntrySerializer,
                           ScoringRulesSerializer, TeamIdSerializer, UsernameSerializer, DraftPickSerializer, QueueEntrySerializer, ChoiceSerializer,
-                          LineupMoveSerializer, MatchupSerializer, AddSerializer, DropSerializer, RankingSerializer, resolve_choice)
+                          LineupMoveSerializer, MatchupSerializer, StandingSerializer, AddSerializer, DropSerializer, RankingSerializer, resolve_choice)
 from .draft import make_pick, pause_draft, resume_draft, team_on_clock, undo_last_pick
 from .scoring import team_week_points
 from .free_agency import add_player, drop_player
-from .matchups import matchup_scores, week_totals
+from .matchups import matchup_scores, standings as league_standings, week_totals
 
 
 def requested_week(request, season: Season) -> int | None:
@@ -235,6 +235,12 @@ class LeagueViewSet(viewsets.ModelViewSet):
                 "away_score": str(away_score) if away_score is not None else None,
             })
         return Response(rows)
+
+    @action(detail=True, permission_classes=[IsAuthenticated])
+    def standings(self, request, pk=None):
+        """GET /leagues/<id>/standings/: every team's regular-season record, best first."""
+        league = self.get_object()
+        return Response(StandingSerializer(league_standings(league), many=True).data)
 
 class FantasyTeamViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, mixins.UpdateModelMixin, viewsets.GenericViewSet):
     serializer_class = FantasyTeamSerializer

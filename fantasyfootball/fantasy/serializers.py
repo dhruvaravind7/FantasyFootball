@@ -12,7 +12,7 @@ class FantasyTeamSerializer(serializers.ModelSerializer):
     class Meta:
         model = FantasyTeam
         fields = ["id", "name", "owner"]
-    
+
     def validate_name(self, value):
         taken = FantasyTeam.objects.filter(league=self.instance.league, name__iexact=value).exclude(pk=self.instance.pk)
         if taken.exists():
@@ -39,7 +39,7 @@ class LeagueSerializer(serializers.ModelSerializer):
             count = self.instance.teams.count()
             if value < count:
                 raise ValidationError(f"This league already has {count} teams.")
-        
+
         return value
 
     @transaction.atomic
@@ -53,21 +53,21 @@ class LeagueSerializer(serializers.ModelSerializer):
 class JoinSerializer(serializers.Serializer):
     invite_code = serializers.CharField(max_length=8)
     team_name = serializers.CharField(max_length=40)
-    
+
 class UsernameSerializer(serializers.Serializer):
     username = serializers.CharField()
 
 class TeamIdSerializer(serializers.Serializer):
     team_id = serializers.IntegerField()
-    
+
 class ScoringRulesSerializer(serializers.ModelSerializer):
     class Meta:
         model = ScoringRules
-        exclude = ["id", "league"]      
-        
+        exclude = ["id", "league"]
+
 class PresetSerializer(serializers.Serializer):
-    preset = serializers.ChoiceField(choices=ScoringRules.Preset.choices)  
-    
+    preset = serializers.ChoiceField(choices=ScoringRules.Preset.choices)
+
 class RosterEntrySerializer(serializers.ModelSerializer):
     """One roster spot: a player or a D/ST, and which slot it's in that week."""
     player = PlayerSerializer(read_only=True)        # null on D/ST rows
@@ -133,7 +133,7 @@ def resolve_choice(data) -> dict:
         if player is None:
             raise NotFound("No player with that id.")
         return {"player": player}
-    
+
     if "nfl_team_id" in data:
         team = Team.objects.filter(id=data["nfl_team_id"]).first()
         if team is None:
@@ -153,3 +153,14 @@ class MatchupSerializer(serializers.ModelSerializer):
     class Meta:
         model = Matchup
         fields = ["id", "week", "home", "away", "is_final"]
+
+class StandingSerializer(serializers.Serializer):
+    """One row of the standings table (built by matchups.standings)."""
+    rank = serializers.IntegerField()
+    team = FantasyTeamSerializer()
+    wins = serializers.IntegerField()
+    losses = serializers.IntegerField()
+    ties = serializers.IntegerField()
+    win_pct = serializers.DecimalField(max_digits=4, decimal_places=3)      # "0.750"
+    points_for = serializers.DecimalField(max_digits=7, decimal_places=2)
+    points_against = serializers.DecimalField(max_digits=7, decimal_places=2)
