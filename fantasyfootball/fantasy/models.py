@@ -1,7 +1,7 @@
 from django.db import models
 from django.conf import settings
 from decimal import Decimal
-from django.db.models import Q
+from django.db.models import Q, F
 
 import secrets
 
@@ -176,6 +176,28 @@ class DraftQueueEntry(models.Model):
             models.UniqueConstraint(fields=["team", "player"], name="one_player_per_queue"),
             models.UniqueConstraint(fields=["team", "nfl_team"], name="one_defense_per_queue")
         ]
+
+class Matchup(models.Model):
+    """One head-to-head game between two fantasy teams in one week."""
+    league = models.ForeignKey(League, on_delete=models.CASCADE, related_name="matchups")
+    week = models.PositiveSmallIntegerField()
+    home = models.ForeignKey(FantasyTeam, on_delete=models.CASCADE, related_name="home_matchups")
+    away = models.ForeignKey(FantasyTeam, on_delete=models.CASCADE, related_name="away_matchups")
+    home_score = models.DecimalField(max_digits=6, decimal_places=2, null=True, blank=True)   # saved when the week is final
+    away_score = models.DecimalField(max_digits=6, decimal_places=2, null=True, blank=True)
+    is_final = models.BooleanField(default=False)
+
+    class Meta:
+        ordering = ["league", "week", "id"]
+        constraints = [
+            models.UniqueConstraint(fields=["league", "week", "home"], name="one_home_game_per_team_per_week"),
+            models.UniqueConstraint(fields=["league", "week", "away"], name="one_away_game_per_team_per_week"),
+            models.CheckConstraint(condition=~Q(home=F("away")), name="home_team_differs_from_away_team")
+        ]
+
+    def __str__(self):
+        """'Week 9: Bot 1 @ Me'"""
+        return f"Week {self.week}: {self.away.name} @ {self.home.name}"
 
 class ScoringRules(models.Model):
     """How many fantasy points each stat is worth in one league. The defaults are ESPN's PPR."""

@@ -4,7 +4,7 @@ from django.db import transaction
 from rest_framework.exceptions import ValidationError, NotFound
 from league.serializers import PlayerSerializer, TeamSerializer
 
-from .models import FantasyTeam, League, ScoringRules, RosterEntry, DraftPick, DraftQueueEntry, PlayerRanking
+from .models import FantasyTeam, League, ScoringRules, RosterEntry, DraftPick, DraftQueueEntry, PlayerRanking, Matchup
 
 class FantasyTeamSerializer(serializers.ModelSerializer):
     owner = serializers.CharField(source="owner.username", allow_null=True, read_only=True)
@@ -144,3 +144,12 @@ class LineupMoveSerializer(serializers.Serializer):
     entry_id = serializers.IntegerField()
     slot = serializers.ChoiceField(choices=RosterEntry.Slot.choices)
     swap_with = serializers.IntegerField(required=False)
+
+class MatchupSerializer(serializers.ModelSerializer):
+    """One week's head-to-head game. The view adds the scores (live or final)."""
+    home = FantasyTeamSerializer(read_only=True)
+    away = FantasyTeamSerializer(read_only=True)
+
+    class Meta:
+        model = Matchup
+        fields = ["id", "week", "home", "away", "is_final"]

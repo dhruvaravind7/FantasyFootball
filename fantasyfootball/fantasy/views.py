@@ -13,10 +13,23 @@ from .rosters import ensure_week
 from .lineups import move
 from .serializers import (FantasyTeamSerializer, JoinSerializer, LeagueSerializer, PresetSerializer, RosterEntrySerializer,
                           ScoringRulesSerializer, TeamIdSerializer, UsernameSerializer, DraftPickSerializer, QueueEntrySerializer, ChoiceSerializer,
-                          LineupMoveSerializer, AddSerializer, DropSerializer, RankingSerializer, resolve_choice)
+                          LineupMoveSerializer, MatchupSerializer, AddSerializer, DropSerializer, RankingSerializer, resolve_choice)
 from .draft import make_pick, pause_draft, resume_draft, team_on_clock, undo_last_pick
 from .scoring import team_week_points
 from .free_agency import add_player, drop_player
+from .matchups import matchup_scores, week_totals
+
+
+def requested_week(request, season: Season) -> int | None:
+    """?week= as an int, or the season's current week when it's not given. 400 if it's not a number."""
+    week = request.query_params.get("week")
+
+    if week is None:
+        return season.current_week
+    elif week.isdigit():
+        return int(week)
+    else:
+        raise ValidationError({"week": "Must be a number"})
 
 class LeagueViewSet(viewsets.ModelViewSet):
     serializer_class = LeagueSerializer
@@ -206,6 +219,23 @@ class LeagueViewSet(viewsets.ModelViewSet):
         available = available.select_related("player__team", "nfl_team")[:50]
         return Response(RankingSerializer(available, many=True).data)
 
+    @action(detail=True, permission_classes=[IsAuthenticated])
+    def matchups(self, request, pk=None):
+        """GET /leagues/<id>/matchups/?week=: that week's matchups with live (or final) scores. Defaults to the current week."""
+        league = self.get_object()
+        week = requested_week(request, league.season)
+        totals = week_totals(league, week)          # every team's score this week, computed once
+        games = league.matchups.filter(week=week).select_related("home__owner", "away__owner")
+        rows = []
+        for matchup in games:
+            home_score, away_score = matchup_scores(matchup, totals)
+            rows.append({
+                **MatchupSerializer(matchup).data,
+                "home_score": str(home_score) if home_score is not None else None,
+                "away_score": str(away_score) if away_score is not None else None,
+            })
+        return Response(rows)
+
 class FantasyTeamViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, mixins.UpdateModelMixin, viewsets.GenericViewSet):
     serializer_class = FantasyTeamSerializer
     permission_classes = [IsAuthenticated, IsOwnerOrCommissioner]
@@ -228,17 +258,6 @@ class FantasyTeamViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, mixin
         """403 unless the logged-in user owns this team or runs its league. Queues are private."""
         if self.request.user != team.owner and self.request.user != team.league.commissioner:
             raise PermissionDenied("Only this team's owner can manage its queue")
-
-    def requested_week(self, request, team: FantasyTeam) -> int | None:
-        """?week= as an int, or the season's current week when it's not given. 400 if it's not a number."""
-        week = request.query_params.get("week")
-
-        if week is None:
-            return team.league.season.current_week
-        elif week.isdigit():
-            return int(week)
-        else:
-            raise ValidationError({"week": "Must be a number"})
 
     @action(detail=True, methods=["get", "post"])
     def queue(self, request, pk=None):
@@ -273,7 +292,7 @@ class FantasyTeamViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, mixin
         team = self.get_object()
         current_week = team.league.season.current_week
 
-        week = self.requested_week(request, team)
+        week = requested_week(request, team.league.season)
 
         # Only the current week rolls forward: past weeks are history, and future weeks would copy today's roster too early
         if week is not None and week == current_week:
@@ -308,7 +327,7 @@ class FantasyTeamViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, mixin
     def points(self, request, pk=None):
         """GET /teams/<id>/points/?week=: every rostered row's fantasy points for that week, plus the team's total (starters only)."""
         team = self.get_object()
-        week = self.requested_week(request, team)
+        week = requested_week(request, team.league.season)
 
         if week is not None and week == team.league.season.current_week:
             ensure_week(team, week)

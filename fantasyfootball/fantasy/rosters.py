@@ -1,4 +1,4 @@
-from .models import RosterEntry
+from .models import League, RosterEntry
 
 
 def ensure_week(team, week: int) -> None:
@@ -15,3 +15,11 @@ def ensure_week(team, week: int) -> None:
                     player_id=entry.player_id, nfl_team_id=entry.nfl_team_id, slot=entry.slot)
         for entry in team.roster.filter(week=last_week)
     ])
+
+
+def ensure_league_week(league: League, week: int) -> None:
+    """ensure_week for every team in the league, using one query to skip the teams that already have rows."""
+    have = set(RosterEntry.objects.filter(league=league, week=week).values_list("team_id", flat=True))
+    for team in league.teams.all():
+        if team.id not in have:
+            ensure_week(team, week)

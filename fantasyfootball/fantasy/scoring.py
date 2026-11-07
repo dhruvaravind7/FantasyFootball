@@ -1,7 +1,8 @@
+from collections import defaultdict
 from decimal import Decimal
 
-from league.models import PlayerGameStats, TeamGameStats
-from .models import FantasyTeam, RosterEntry
+from league.models import PlayerGameStats, Season, TeamGameStats
+from .models import FantasyTeam, League, RosterEntry, ScoringRules
 
 NOT_STARTING = {RosterEntry.Slot.BENCH, RosterEntry.Slot.IR}
 
@@ -73,12 +74,8 @@ def dst_points(stats, rules) -> Decimal:
 
     return points
 
-def team_week_points(team: FantasyTeam, week: int) -> dict:
-    """Every rostered row's points for `week`, plus the team's total (starters only)."""
-    rules = team.league.scoring
-    season = team.league.season
-    entries = list(team.roster.filter(week=week).select_related("player__team", "nfl_team").order_by("id"))
-
+def score_entries(entries: list[RosterEntry], season: Season, week: int, rules: ScoringRules) -> list[dict]:
+    """Points for each roster row in `week` ([{"entry", "points", "has_stats"}]), looking up all their stats in 2 queries."""
     player_ids = [e.player_id for e in entries if e.player_id]
     player_lines = {s.player_id: s for s in PlayerGameStats.objects.filter(
         game__season=season, game__week=week, player_id__in=player_ids)}
@@ -88,7 +85,6 @@ def team_week_points(team: FantasyTeam, week: int) -> dict:
         game__season=season, game__week=week, team_id__in=dst_ids)}
 
     rows = []
-    total = Decimal("0")
     for entry in entries:
         if entry.player_id:
             line = player_lines.get(entry.player_id)
@@ -96,8 +92,28 @@ def team_week_points(team: FantasyTeam, week: int) -> dict:
         else:
             line = dst_lines.get(entry.nfl_team_id)
             points = dst_points(line, rules) if line else Decimal("0")
-        if entry.slot not in NOT_STARTING:
-            total += points
         rows.append({"entry": entry, "points": points, "has_stats": line is not None})
+    return rows
 
+
+def team_week_points(team: FantasyTeam, week: int) -> dict:
+    """Every rostered row's points for `week`, plus the team's total (starters only)."""
+    league = team.league
+    entries = list(team.roster.filter(week=week).select_related("player__team", "nfl_team").order_by("id"))
+    rows = score_entries(entries, league.season, week, league.scoring)
+    total = Decimal("0")
+    for row in rows:
+        if row["entry"].slot not in NOT_STARTING:
+            total += row["points"]
     return {"week": week, "total": total, "rows": rows}
+
+
+def league_week_totals(league: League, week: int) -> dict[int, Decimal]:
+    """Every team's starter total for `week` as {fantasy team id: points}, in a fixed number of queries."""
+    entries = list(RosterEntry.objects.filter(league=league, week=week))
+    totals = defaultdict(Decimal)
+    for row in score_entries(entries, league.season, week, league.scoring):
+        entry = row["entry"]
+        if entry.slot not in NOT_STARTING:
+            totals[entry.team_id] += row["points"]
+    return totals

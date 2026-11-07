@@ -7,6 +7,7 @@ from django.db import transaction
 from django.utils import timezone
 from rest_framework.exceptions import ValidationError
 
+from .matchups import build_schedule
 from .models import DraftPick, DraftQueueEntry, FantasyTeam, League, RosterEntry
 from .rankings import FANTASY_POSITIONS, build_rankings
 
@@ -207,6 +208,7 @@ def finish_draft(league):
     league.status = League.Status.IN_SEASON
     league.current_pick, league.pick_deadline = None, None
     league.save(update_fields=["status", "current_pick", "pick_deadline"])
+    build_schedule(league)
 
 @transaction.atomic
 def pause_draft(league) -> None:
