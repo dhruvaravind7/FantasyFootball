@@ -2,9 +2,9 @@ from league.models import Player, Team
 from rest_framework import serializers
 from django.db import transaction
 from rest_framework.exceptions import ValidationError, NotFound
-from league.serializers import PlayerSerializer
+from league.serializers import PlayerSerializer, TeamSerializer
 
-from .models import FantasyTeam, League, ScoringRules, RosterEntry, DraftPick, DraftQueueEntry
+from .models import FantasyTeam, League, ScoringRules, RosterEntry, DraftPick, DraftQueueEntry, PlayerRanking
 
 class FantasyTeamSerializer(serializers.ModelSerializer):
     owner = serializers.CharField(source="owner.username", allow_null=True, read_only=True)
@@ -107,6 +107,24 @@ class ChoiceSerializer(serializers.Serializer):
         if ("player_id" in data) == ("nfl_team_id" in data):
             raise serializers.ValidationError("Send exactly one of player_id or nfl_team_id.")
         return data
+
+class AddSerializer(ChoiceSerializer):
+    """Input for an add: exactly one of player_id / nfl_team_id (from ChoiceSerializer), plus an optional drop."""
+    drop_entry_id = serializers.IntegerField(required=False)
+
+
+class DropSerializer(serializers.Serializer):
+    """Input for a drop: the roster row to drop."""
+    entry_id = serializers.IntegerField(required=True)
+
+class RankingSerializer(serializers.ModelSerializer):
+    """One player or D/ST in a league's rankings, as shown in the free-agent list."""
+    player = PlayerSerializer(read_only=True)
+    dst = serializers.CharField(source="nfl_team.abbreviation", allow_null=True, read_only=True)             # same as RosterEntrySerializer.dst
+
+    class Meta:
+        model = PlayerRanking
+        fields = ["rank", "position", "player", "dst", "points_per_game"]
 
 def resolve_choice(data) -> dict:
     """{"player": Player} or {"nfl_team": Team} from ChoiceSerializer's validated data. 404 if the id doesn't exist."""

@@ -7,15 +7,16 @@ from rest_framework.response import Response
 from django.db import transaction
 
 from league.models import Season
-from .models import FantasyTeam, League, ScoringRules, DraftQueueEntry
+from .models import FantasyTeam, League, ScoringRules, DraftQueueEntry, RosterEntry
 from .permissions import IsCommissionerOrReadOnly, IsOwnerOrCommissioner
 from .rosters import ensure_week
 from .lineups import move
 from .serializers import (FantasyTeamSerializer, JoinSerializer, LeagueSerializer, PresetSerializer, RosterEntrySerializer,
                           ScoringRulesSerializer, TeamIdSerializer, UsernameSerializer, DraftPickSerializer, QueueEntrySerializer, ChoiceSerializer,
-                          LineupMoveSerializer, resolve_choice)
+                          LineupMoveSerializer, AddSerializer, DropSerializer, RankingSerializer, resolve_choice)
 from .draft import make_pick, pause_draft, resume_draft, team_on_clock, undo_last_pick
 from .scoring import team_week_points
+from .free_agency import add_player, drop_player
 
 class LeagueViewSet(viewsets.ModelViewSet):
     serializer_class = LeagueSerializer
@@ -190,6 +191,21 @@ class LeagueViewSet(viewsets.ModelViewSet):
         undo_last_pick(league)
         return self.draft(request, pk)
 
+    @action(detail=True, url_path="free-agents", permission_classes=[IsAuthenticated])
+    def free_agents(self, request, pk=None):
+        """GET /leagues/<id>/free-agents/?position=: unowned players and D/STs this week, best ranked first (top 50)."""
+        league = self.get_object()
+        week = league.season.current_week
+        owned = RosterEntry.objects.filter(league=league, week=week)
+        owned_players = owned.exclude(player=None).values_list("player_id", flat=True)
+        owned_teams = owned.exclude(nfl_team=None).values_list("nfl_team_id", flat=True)
+        available = league.rankings.exclude(player_id__in=owned_players).exclude(nfl_team_id__in=owned_teams)
+        position = request.query_params.get("position")
+        if position:
+            available = available.filter(position=position.upper())
+        available = available.select_related("player__team", "nfl_team")[:50]
+        return Response(RankingSerializer(available, many=True).data)
+
 class FantasyTeamViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, mixins.UpdateModelMixin, viewsets.GenericViewSet):
     serializer_class = FantasyTeamSerializer
     permission_classes = [IsAuthenticated, IsOwnerOrCommissioner]
@@ -305,3 +321,22 @@ class FantasyTeamViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, mixin
                 for row in result["rows"]
             ],
         })
+
+    @action(detail=True, methods=["post"])
+    def add(self, request, pk=None):
+        """POST /teams/<id>/add/: add a free agent (optionally dropping someone in the same move), then return the roster."""
+        team = self.get_object()
+        serializer = AddSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+        add_player(team, **resolve_choice(data), drop_entry_id=data.get("drop_entry_id"))
+        return self.roster(request)
+
+    @action(detail=True, methods=["post"])
+    def drop(self, request, pk=None):
+        """POST /teams/<id>/drop/: drop one player, then return the roster."""
+        team = self.get_object()
+        serializer = DropSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        drop_player(team, serializer.validated_data["entry_id"])
+        return self.roster(request)
