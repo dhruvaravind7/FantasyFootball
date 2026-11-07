@@ -34,6 +34,7 @@ class League(models.Model):
     pick_seconds = models.PositiveSmallIntegerField(default=90)
     current_pick = models.PositiveSmallIntegerField(null=True, blank=True)
     pick_deadline = models.DateTimeField(null=True, blank=True)
+    paused_seconds_left = models.PositiveSmallIntegerField(blank=True, null=True)
     
     @property
     def roster_size(self) -> int:

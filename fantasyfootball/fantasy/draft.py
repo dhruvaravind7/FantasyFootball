@@ -1,4 +1,5 @@
 import random
+import logging
 from collections import Counter
 from datetime import timedelta
 
@@ -8,6 +9,8 @@ from rest_framework.exceptions import ValidationError
 
 from .models import DraftPick, DraftQueueEntry, FantasyTeam, League, RosterEntry
 from .rankings import FANTASY_POSITIONS, build_rankings
+
+logger = logging.getLogger(__name__)
 
 POSITION_LIMITS = {"QB": 4, "RB": 8, "WR": 8, "TE": 3, "PK": 3, "DST": 3}
 FLEX_POSITIONS = {"RB", "WR", "TE"}
@@ -103,6 +106,8 @@ def make_pick(league, team, player=None, nfl_team=None, auto=False):
     # 1. The league must be drafting, and it must be this team's turn
     if league.status != League.Status.DRAFTING:
         raise ValidationError({"detail": "The league is not drafting right now"})
+    if league.paused_seconds_left is not None:
+        raise ValidationError({"detail": "The draft is paused."})
     if team != team_on_clock(league):
         raise ValidationError({"detail": "It is not your turn to draft"})
 
@@ -202,4 +207,78 @@ def finish_draft(league):
     league.status = League.Status.IN_SEASON
     league.current_pick, league.pick_deadline = None, None
     league.save(update_fields=["status", "current_pick", "pick_deadline"])
+
+@transaction.atomic
+def pause_draft(league) -> None:
+    """Stop the clock, remembering how much time the current pick had left."""
+    league = League.objects.select_for_update().get(pk=league.pk)
+    if league.status != League.Status.DRAFTING or league.paused_seconds_left is not None:
+        raise ValidationError({"detail": "The draft isn't running."})
     
+    league.paused_seconds_left = max(0, int((league.pick_deadline - timezone.now()).total_seconds()))
+    league.pick_deadline = None
+    league.save(update_fields=["paused_seconds_left", "pick_deadline"])
+
+
+@transaction.atomic
+def resume_draft(league) -> None:
+    """Restart the clock with the time it had when paused."""
+    league = League.objects.select_for_update().get(pk=league.pk)
+    if league.paused_seconds_left is None:
+        raise ValidationError({"detail": "The draft isn't paused."})
+    league.pick_deadline = timezone.now() + timedelta(seconds=league.paused_seconds_left)
+    league.paused_seconds_left = None
+    league.save(update_fields=["paused_seconds_left", "pick_deadline"])
+
+
+@transaction.atomic
+def undo_last_pick(league) -> None:
+    """Take back the most recent pick. That team goes back on the clock with a full timer."""
+    league = League.objects.select_for_update().get(pk=league.pk)
+    if league.status != League.Status.DRAFTING or league.current_pick == 1:
+        raise ValidationError({"detail": "There's no pick to undo."})
+    league.picks.get(number=league.current_pick-1).delete()      # the pick BEFORE the one on the clock
+    league.current_pick -= 1
+    # A paused draft stays paused, but with a full timer waiting.
+    # A running draft gets a fresh deadline.
+    if league.paused_seconds_left is not None:  # Paused
+        league.paused_seconds_left = league.pick_seconds
+    else:
+        league.pick_deadline = timezone.now() + timedelta(seconds=league.pick_seconds)
+    league.save(update_fields=["current_pick", "pick_deadline", "paused_seconds_left"])
+    
+def run_league(league) -> int:
+    """Make every pick that's due in this league right now. Returns how many picks it made."""
+    picks = 0
+    while True:
+        league.refresh_from_db()                              # make_pick changed it, so read the new state
+        if league.status != League.Status.DRAFTING or league.paused_seconds_left is not None:
+            return picks
+        team = team_on_clock(league)
+        if team.owner_id is None or team.autodraft:           # a bot, or a team on autodraft: pick now
+            autopick(league, team)
+        elif timezone.now() >= league.pick_deadline:          # a human's clock ran out
+            team.autodraft = True
+            team.save(update_fields=["autodraft"])
+            autopick(league, team)
+        else:
+            return picks                                      # a human is on the clock with time left
+        picks += 1
+
+def poll() -> int:
+    """One pass of the runner: start due drafts, then move every live draft forward. Returns picks made."""
+    # 1. Start every league in SETUP whose draft_time has passed (draft_time__lte=timezone.now())
+    for league in League.objects.filter(draft_time__lte=timezone.now(), status=League.Status.SETUP):
+        try:
+            start_draft(league)
+        except ValidationError as e:
+            logger.warning("Couldn't start the draft for %s: %s", league, e)
+    # 2. Every DRAFTING league: run_league, and add up the picks.
+    #    Same try/except, so one stuck league doesn't stop the others.
+    total = 0
+    for league in League.objects.filter(status=League.Status.DRAFTING):
+        try:
+            total += run_league(league=league)
+        except ValidationError as e:
+            logger.warning("Couldn't run the draft for %s: %s", league, e)
+    return total

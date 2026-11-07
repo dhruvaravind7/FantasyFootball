@@ -12,7 +12,7 @@ from .permissions import IsCommissionerOrReadOnly, IsOwnerOrCommissioner
 from .rosters import ensure_week
 from .serializers import (FantasyTeamSerializer, JoinSerializer, LeagueSerializer, PresetSerializer, RosterEntrySerializer,
                           ScoringRulesSerializer, TeamIdSerializer, UsernameSerializer, DraftPickSerializer, QueueEntrySerializer, ChoiceSerializer, resolve_choice)
-from .draft import make_pick, team_on_clock
+from .draft import make_pick, pause_draft, resume_draft, team_on_clock, undo_last_pick
 
 class LeagueViewSet(viewsets.ModelViewSet):
     serializer_class = LeagueSerializer
@@ -136,6 +136,7 @@ class LeagueViewSet(viewsets.ModelViewSet):
             "status": league.status,
             "current_pick": league.current_pick,
             "pick_deadline": league.pick_deadline,
+            "paused_seconds_left": league.paused_seconds_left,
             "on_clock": FantasyTeamSerializer(on_clock).data if on_clock else None,
             "picks": DraftPickSerializer(picks, many=True).data,
         })
@@ -143,8 +144,6 @@ class LeagueViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=["post"], url_path="draft/pick", permission_classes=[IsAuthenticated])
     def draft_pick(self, request, pk=None):
         league = self.get_object()
-        # YOU: 400 "This league isn't drafting." unless status is DRAFTING
-        #      (team_on_clock crashes on a league that isn't drafting, so this check comes FIRST)
         if league.status != League.Status.DRAFTING:
             raise ValidationError({"detail": "This league isn't drafting"})
         team = team_on_clock(league)
@@ -155,6 +154,23 @@ class LeagueViewSet(viewsets.ModelViewSet):
         pick = make_pick(league, team, **resolve_choice(serializer.validated_data))
         return Response(DraftPickSerializer(pick).data, status=status.HTTP_201_CREATED)
     
+    @action(detail=True, methods=["post"], url_path="draft/pause")
+    def draft_pause(self, request, pk=None):
+        league = self.get_object()            
+        pause_draft(league)
+        return self.draft(request, pk)        
+    
+    @action(detail=True, methods=["post"], url_path="draft/resume")
+    def draft_resume(self, request, pk=None):
+        league = self.get_object()            
+        resume_draft(league)
+        return self.draft(request, pk)        
+    
+    @action(detail=True, methods=["post"], url_path="draft/undo")
+    def draft_undo(self, request, pk=None):
+        league = self.get_object()            
+        undo_last_pick(league)
+        return self.draft(request, pk)        
 
 class FantasyTeamViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, mixins.UpdateModelMixin, viewsets.GenericViewSet):
     serializer_class = FantasyTeamSerializer
@@ -177,7 +193,6 @@ class FantasyTeamViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, mixin
         """403 unless the logged-in user owns this team or runs its league. Queues are private."""
         if self.request.user != team.owner and self.request.user != team.league.commissioner:
             raise PermissionDenied("Only this team's owner can manage its queue")
-        # YOU: raise PermissionDenied("Only this team's owner can manage its queue.") when neither is true
     
     @action(detail=True, methods=["get", "post"])
     def queue(self, request, pk=None):
@@ -189,9 +204,6 @@ class FantasyTeamViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, mixin
             choice = resolve_choice(serializer.validated_data)
             if team.league.picks.filter(**choice).exists():
                 raise ValidationError({"detail": "Already Drafted"})
-            # YOU: 400 "Already drafted." if team.league.picks has him
-            #      (.filter(**choice) works for either kind, because choice is {"player": ...} or {"nfl_team": ...})
-            # YOU: 400 "Already in your queue." if team.queue has him
             if team.queue.filter(**choice).exists():
                 raise ValidationError("Already in your queue")
             last = team.queue.order_by("-order").values_list("order", flat=True).first() or 0
@@ -236,4 +248,3 @@ class FantasyTeamViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, mixin
         team.autodraft = on
         team.save(update_fields = ["autodraft"])
         return Response({"autodraft": team.autodraft})
-        # YOU: set team.autodraft, save with update_fields, return {"autodraft": team.autodraft}
