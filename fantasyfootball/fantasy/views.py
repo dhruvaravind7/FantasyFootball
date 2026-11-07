@@ -10,8 +10,10 @@ from league.models import Season
 from .models import FantasyTeam, League, ScoringRules, DraftQueueEntry
 from .permissions import IsCommissionerOrReadOnly, IsOwnerOrCommissioner
 from .rosters import ensure_week
+from .lineups import move
 from .serializers import (FantasyTeamSerializer, JoinSerializer, LeagueSerializer, PresetSerializer, RosterEntrySerializer,
-                          ScoringRulesSerializer, TeamIdSerializer, UsernameSerializer, DraftPickSerializer, QueueEntrySerializer, ChoiceSerializer, resolve_choice)
+                          ScoringRulesSerializer, TeamIdSerializer, UsernameSerializer, DraftPickSerializer, QueueEntrySerializer, ChoiceSerializer,
+                          LineupMoveSerializer, resolve_choice)
 from .draft import make_pick, pause_draft, resume_draft, team_on_clock, undo_last_pick
 
 class LeagueViewSet(viewsets.ModelViewSet):
@@ -248,3 +250,14 @@ class FantasyTeamViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, mixin
         team.autodraft = on
         team.save(update_fields = ["autodraft"])
         return Response({"autodraft": team.autodraft})
+
+    from .lineups import move
+
+    @action(detail=True, methods=["post"])
+    def lineup(self, request, pk=None):
+        team = self.get_object()
+        serializer = LineupMoveSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+        move(team, data["entry_id"], data["slot"], data.get("swap_with"))
+        return self.roster(request)

@@ -121,3 +121,8 @@ def resolve_choice(data) -> dict:
         if team is None:
             raise NotFound("No team with that id")
         return {"nfl_team": team}
+
+class LineupMoveSerializer(serializers.Serializer):
+    entry_id = serializers.IntegerField()
+    slot = serializers.ChoiceField(choices=RosterEntry.Slot.choices)
+    swap_with = serializers.IntegerField(required=False)

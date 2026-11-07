@@ -29,6 +29,7 @@ class League(models.Model):
     dst_slots = models.PositiveSmallIntegerField(default=1)
     k_slots = models.PositiveSmallIntegerField(default=1)
     bench_slots = models.PositiveSmallIntegerField(default=7)
+    ir_slots = models.PositiveSmallIntegerField(default=1)
     
     draft_time = models.DateTimeField(null=True, blank=True)
     pick_seconds = models.PositiveSmallIntegerField(default=90)
@@ -107,6 +108,11 @@ class RosterEntry(models.Model):
             models.UniqueConstraint(fields=["league", "week", "player"], name="one_player_per_week_per_league"),
             models.UniqueConstraint(fields=["league", "week", "nfl_team"], name="one_defense_per_week_per_league")
         ]
+
+    def __str__(self):
+        if self.nfl_team_id is None:
+            return f"{self.player.first_name} {self.player.last_name} ({self.player.position})"
+        return f"{self.nfl_team.city} {self.nfl_team.name} D/ST"
 
 def points(default):
     """A scoring value like 0.04 or -2. max 999.99, 2 decimal places."""
