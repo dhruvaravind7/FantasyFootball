@@ -11,7 +11,10 @@ from .models import FantasyTeam, League, Matchup
 from .rosters import ensure_league_week
 from .scoring import league_week_totals
 
-REGULAR_SEASON_WEEKS = 14
+FIRST_ROUND = {
+    4: [(1, 4), (2, 3)],        # slot 0: 1 v 4, slot 1: 2 v 3
+    6: [(4, 5), (3, 6)],        # seeds 1 and 2 have a bye: slot 0's winner plays seed 1, slot 1's plays seed 2
+}
 
 
 def round_robin(teams: list[FantasyTeam]) -> list[list[tuple[FantasyTeam, FantasyTeam]]]:
@@ -33,7 +36,7 @@ def build_schedule(league: League) -> None:
     start = league.season.current_week or 1
     home_games = Counter()            # team id -> home games given so far
     matchups = []
-    for week in range(start, REGULAR_SEASON_WEEKS + 1):
+    for week in range(start, league.regular_season_weeks + 1):
         for a, b in rounds[(week - start) % len(rounds)]:      # week `start` uses round 0, the next week round 1, ... wrapping around
             # whichever has FEWER home games so far is home (a wins a tie)
             if home_games[a.id] <= home_games[b.id]:
@@ -103,6 +106,11 @@ def finalize_week(league: League, week: int) -> int:
         matchup.away_score = totals[matchup.away_id]
         matchup.is_final = True
     Matchup.objects.bulk_update(unfinished, ["home_score", "away_score", "is_final"])
+    if week == league.regular_season_weeks:
+        start_playoffs(league)
+    elif week > league.regular_season_weeks:          # the games just finalized were playoff games
+        next_round(league, unfinished[0].playoff_round, week)
+
     return len(unfinished)
 
 
@@ -113,7 +121,7 @@ def standings(league: League) -> list[dict]:
                   "points_for": Decimal("0"), "points_against": Decimal("0")}
         for team in league.teams.select_related("owner")
     }
-    for m in league.matchups.filter(is_final=True, week__lte=REGULAR_SEASON_WEEKS):
+    for m in league.matchups.filter(is_final=True, playoff_round=None):
         home, away = table[m.home_id], table[m.away_id]
         home["points_for"] += m.home_score
         home["points_against"] += m.away_score
@@ -137,3 +145,43 @@ def standings(league: League) -> list[dict]:
     for rank, row in enumerate(rows, start=1):
         row["rank"] = rank
     return rows
+
+def winner(matchup: Matchup) -> FantasyTeam:
+    """The team that advances: the higher score, or the better (lower-numbered) seed on a tie."""
+    if matchup.home_score != matchup.away_score:
+        return matchup.home if matchup.home_score > matchup.away_score else matchup.away
+    return matchup.home if matchup.home.playoff_seed < matchup.away.playoff_seed else matchup.away
+
+def start_playoffs(league: League) -> None:
+    """Seed the top `playoff_teams` from the standings and create the first playoff round."""
+    seeded = standings(league)[:league.playoff_teams]
+    teams = {row["rank"]: row["team"] for row in seeded}          # seed -> FantasyTeam
+    for rank in teams:
+        teams[rank].playoff_seed = rank
+    FantasyTeam.objects.bulk_update(teams.values(), ["playoff_seed"])
+    week = league.regular_season_weeks + 1
+    Matchup.objects.bulk_create([
+        Matchup(league=league, week=week, home=teams[a], away=teams[b], playoff_round=1, bracket_slot=slot)
+        for slot, (a, b) in enumerate(FIRST_ROUND[league.playoff_teams])
+    ])
+
+def next_round(league: League, finished_round: int, week: int) -> None:
+    """Create the round after `finished_round` (played in `week`), or mark the league Complete after the final."""
+    games = list(league.matchups.filter(playoff_round=finished_round).select_related("home", "away").order_by("bracket_slot"))
+    winners = [winner(m) for m in games]
+    if len(winners) == 1:
+        league.status = League.Status.COMPLETE
+        league.save(update_fields=["status"])
+        return
+    if finished_round == 1 and league.playoff_teams == 6:
+        byes = {team.playoff_seed: team for team in league.teams.filter(playoff_seed__in=[1, 2])}
+        pairs = [(byes[1], winners[0]), (byes[2], winners[1])]
+    else:
+        home, away = winners
+        if away.playoff_seed < home.playoff_seed:
+            home, away = away, home
+        pairs = [(home, away)]
+    Matchup.objects.bulk_create([
+        Matchup(league=league, week=week + 1, home=a, away=b, playoff_round=finished_round + 1, bracket_slot=slot)
+        for slot, (a, b) in enumerate(pairs)
+    ])

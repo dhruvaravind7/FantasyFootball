@@ -5,6 +5,8 @@ from django.db.models import Q, F
 
 import secrets
 
+PLAYOFF_LAST_WEEK = 17
+
 # Create your models here.
 class League(models.Model):
     class Status(models.TextChoices):
@@ -12,7 +14,7 @@ class League(models.Model):
         DRAFTING = "DRAFTING", "Drafting"
         IN_SEASON = "IN_SEASON", "In Season"
         COMPLETE = "COMPLETE", "Complete"
-    
+
     name = models.CharField(max_length=60)
     season = models.ForeignKey("league.Season", on_delete=models.CASCADE, related_name="fantasy_leagues")
     commissioner = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name="commissioned_leagues")
@@ -30,33 +32,46 @@ class League(models.Model):
     k_slots = models.PositiveSmallIntegerField(default=1)
     bench_slots = models.PositiveSmallIntegerField(default=7)
     ir_slots = models.PositiveSmallIntegerField(default=1)
-    
+
     draft_time = models.DateTimeField(null=True, blank=True)
     pick_seconds = models.PositiveSmallIntegerField(default=90)
     current_pick = models.PositiveSmallIntegerField(null=True, blank=True)
     pick_deadline = models.DateTimeField(null=True, blank=True)
     paused_seconds_left = models.PositiveSmallIntegerField(blank=True, null=True)
-    
+
+    playoff_teams = models.PositiveSmallIntegerField(default=4)      # 4 or 6
+
     @property
     def roster_size(self) -> int:
         """Spots a team fills in the draft: every starter spot plus bench. IR doesn't count."""
         return self.qb_slots + self.wr_slots + self.rb_slots + self.te_slots + self.flex_slots + self.dst_slots + self.k_slots + self.bench_slots
-    
+
+    @property
+    def playoff_rounds(self) -> int:
+        """2 rounds for a 4-team bracket, 3 for a 6-team bracket (the top 2 seeds have a first-round bye)."""
+        return 2 if self.playoff_teams == 4 else 3
+
+    @property
+    def regular_season_weeks(self) -> int:
+        """The last regular-season week: the playoff rounds fill the weeks after it, ending at PLAYOFF_LAST_WEEK."""
+        return PLAYOFF_LAST_WEEK - self.playoff_rounds
+
     class Meta:
         constraints = [
             models.CheckConstraint(condition=Q(size__in=[4, 6, 8, 10, 12, 14]), name="league_size_even_4_to_14"),
+            models.CheckConstraint(condition=Q(playoff_teams=4) | Q(playoff_teams=6), name="playoff_teams_4_or_6"),
         ]
-    
+
     def __str__(self):
         return self.name
-    
+
     INVITE_ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"
-    
+
     def save(self, *args, **kwargs):
         if not self.invite_code:
             self.invite_code = self.new_invite_code()
         super().save(*args, **kwargs)
-        
+
     @classmethod
     def new_invite_code(cls):
         while True:
@@ -71,7 +86,9 @@ class FantasyTeam(models.Model):
     name = models.CharField(max_length=40)
     created_at = models.DateTimeField(auto_now_add=True)
     draft_position = models.PositiveSmallIntegerField(null=True, blank=True)
-    autodraft = models.BooleanField(default=False)    
+    autodraft = models.BooleanField(default=False)
+    playoff_seed = models.PositiveSmallIntegerField(null=True, blank=True)
+
     class Meta:
         constraints = [
             models.UniqueConstraint(fields=["league", "owner"], name="one_team_per_owner_per_league"),
@@ -92,14 +109,14 @@ class RosterEntry(models.Model):
         K = "K", "Kicker"
         BENCH = "BENCH", "Bench"
         IR = "IR", "Injured Reserve"
-        
+
     team = models.ForeignKey(FantasyTeam, on_delete=models.CASCADE, related_name="roster")
     league = models.ForeignKey(League, on_delete=models.CASCADE, related_name="+")
     week = models.PositiveSmallIntegerField()
     player = models.ForeignKey("league.Player", on_delete=models.PROTECT, related_name="rosters", null=True, blank=True)       # Player and not D/ST
     nfl_team = models.ForeignKey("league.Team", on_delete=models.PROTECT, null=True, blank=True, related_name="+")                                # D/ST and not Player
-    slot = models.CharField(choices=Slot.choices, max_length=5, default=Slot.BENCH)                                 # Which slot the person/team is in 
-    
+    slot = models.CharField(choices=Slot.choices, max_length=5, default=Slot.BENCH)                                 # Which slot the person/team is in
+
     class Meta:
         constraints = [
             models.CheckConstraint(condition=Q(player__isnull=False, nfl_team__isnull=True) | Q(player__isnull=True, nfl_team__isnull=False),
@@ -159,7 +176,7 @@ class DraftPick(models.Model):
             models.UniqueConstraint(fields=["league", "player"], name="player_drafted_once_per_league"),
             models.UniqueConstraint(fields=["league", "nfl_team"], name="defense_drafted_once_per_league")
         ]
-        
+
 class DraftQueueEntry(models.Model):
     """One player or D/ST on a team's draft queue. Lower `order` = picked first."""
     team = models.ForeignKey(FantasyTeam, on_delete=models.CASCADE, related_name="queue")
@@ -186,6 +203,8 @@ class Matchup(models.Model):
     home_score = models.DecimalField(max_digits=6, decimal_places=2, null=True, blank=True)   # saved when the week is final
     away_score = models.DecimalField(max_digits=6, decimal_places=2, null=True, blank=True)
     is_final = models.BooleanField(default=False)
+    playoff_round = models.PositiveSmallIntegerField(null=True, blank=True)
+    bracket_slot = models.PositiveSmallIntegerField(null=True, blank=True)
 
     class Meta:
         ordering = ["league", "week", "id"]
@@ -243,7 +262,7 @@ class ScoringRules(models.Model):
     dst_td = points("6")
     dst_safety = points("2")
     dst_blocked_kick = points("2")
-    
+
     pa_0 = points("5")
     pa_1_6 = points("4")
     pa_7_13 = points("3")
@@ -252,6 +271,6 @@ class ScoringRules(models.Model):
     pa_28_34 = points("-1")
     pa_35_45 = points("-3")
     pa_46_plus = points("-5")
-    
+
     def __str__(self):
         return f"Scoring for {self.league}"

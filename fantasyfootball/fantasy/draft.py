@@ -81,8 +81,10 @@ def start_draft(league: League) -> None:
         teams.append(league.teams.create(name=f"Bot {n}"))      # owner left empty = a bot
         bots_needed -= 1
 
-    # 2. Shrink (or grow) the size to exactly the number of teams
+    # 2. Shrink (or grow) the size to exactly the number of teams. A 6-team bracket can't fit fewer than 6 teams.
     league.size = len(teams)
+    if league.playoff_teams > league.size:
+        league.playoff_teams = 4
 
     # 3. Random order: shuffle, then give each team its position 1..n
     random.shuffle(teams)

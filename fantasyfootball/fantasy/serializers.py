@@ -11,7 +11,8 @@ class FantasyTeamSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = FantasyTeam
-        fields = ["id", "name", "owner"]
+        fields = ["id", "name", "owner", "playoff_seed"]
+        read_only_fields = ["playoff_seed"]
 
     def validate_name(self, value):
         taken = FantasyTeam.objects.filter(league=self.instance.league, name__iexact=value).exclude(pk=self.instance.pk)
@@ -28,7 +29,7 @@ class LeagueSerializer(serializers.ModelSerializer):
         model = League
         fields = ["id", "name", "size", "status", "invite_code", "commissioner",
                   "qb_slots", "rb_slots", "wr_slots", "te_slots", "flex_slots", "dst_slots", "k_slots", "bench_slots",
-                  "teams", "team_name", "draft_time", "pick_seconds", "current_pick", "pick_deadline"]
+                  "teams", "team_name", "draft_time", "pick_seconds", "current_pick", "pick_deadline", "playoff_teams"]
         read_only_fields = ["status", "invite_code", "current_pick", "pick_deadline"]
 
     def validate_size(self, value):
@@ -41,6 +42,20 @@ class LeagueSerializer(serializers.ModelSerializer):
                 raise ValidationError(f"This league already has {count} teams.")
 
         return value
+
+    def validate_playoff_teams(self, value: int) -> int:
+        """A playoff bracket has 4 or 6 teams."""
+        if value != 4 and value != 6:
+            raise ValidationError("Must have either 4 or 6 playoff teams.")
+        return value
+
+    def validate(self, data: dict) -> dict:
+        """Playoff teams can't outnumber the league. On a PATCH, a field that wasn't sent keeps its saved value."""
+        size = data.get("size", self.instance.size if self.instance else 10)
+        playoff_teams = data.get("playoff_teams", self.instance.playoff_teams if self.instance else 4)     # saved value, or 4 when creating
+        if playoff_teams > size:
+            raise ValidationError({"playoff_teams": f"A {size}-team league can't have {playoff_teams} playoff teams."})
+        return data
 
     @transaction.atomic
     def create(self, validated_data):
@@ -152,7 +167,7 @@ class MatchupSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Matchup
-        fields = ["id", "week", "home", "away", "is_final"]
+        fields = ["id", "week", "home", "away", "is_final", "playoff_round"]
 
 class StandingSerializer(serializers.Serializer):
     """One row of the standings table (built by matchups.standings)."""
