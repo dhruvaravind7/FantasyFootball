@@ -37,7 +37,29 @@ class Team(models.Model):
     
     def all_games(self):
         return Game.objects.filter(models.Q(home_team=self) | models.Q(away_team=self))
+
+class Game(models.Model):
+    class Status(models.TextChoices):
+        SCHEDULED = "SCHEDULED", "Scheduled"
+        IN_PROGRESS = "IN_PROGRESS", "In Progress"
+        FINAL = "FINAL", "Final"
     
+    season = models.ForeignKey(Season, on_delete=models.CASCADE, related_name="games")
+    week = models.PositiveSmallIntegerField()
+    home_team = models.ForeignKey(Team, on_delete=models.PROTECT, related_name="home_games")
+    away_team = models.ForeignKey(Team, on_delete=models.PROTECT, related_name="away_games")
+    kickoff = models.DateTimeField()
+    status = models.CharField(default=Status.SCHEDULED, choices=Status.choices)
+    home_score = models.PositiveSmallIntegerField(default=0)
+    away_score = models.PositiveSmallIntegerField(default=0)
+    espn_id = models.CharField(max_length=20, unique=True, null=True, blank=True)
+
+    class Meta:
+        ordering = ["kickoff"]
+
+    def __str__(self):
+        return f"Week {self.week}: {self.away_team} @ {self.home_team}"
+
 class Player(models.Model):
     
     class Position(models.TextChoices):
@@ -87,28 +109,6 @@ class Player(models.Model):
     
     def __str__(self):
         return f"{self.first_name} {self.last_name} ({self.position})"
-
-class Game(models.Model):
-    class Status(models.TextChoices):
-        SCHEDULED = "SCHEDULED", "Scheduled"
-        IN_PROGRESS = "IN_PROGRESS", "In Progress"
-        FINAL = "FINAL", "Final"
-    
-    season = models.ForeignKey(Season, on_delete=models.CASCADE, related_name="games")
-    week = models.PositiveSmallIntegerField()
-    home_team = models.ForeignKey(Team, on_delete=models.PROTECT, related_name="home_games")
-    away_team = models.ForeignKey(Team, on_delete=models.PROTECT, related_name="away_games")
-    kickoff = models.DateTimeField()
-    status = models.CharField(default=Status.SCHEDULED, choices=Status.choices)
-    home_score = models.PositiveSmallIntegerField(default=0)
-    away_score = models.PositiveSmallIntegerField(default=0)
-    espn_id = models.CharField(max_length=20, unique=True, null=True, blank=True)
-
-    class Meta:
-        ordering = ["kickoff"]
-
-    def __str__(self):
-        return f"Week {self.week}: {self.away_team} @ {self.home_team}"
 
 class TeamGameStats(models.Model):
     """A team's defense and special teams line for one game, for D/ST fantasy scoring."""

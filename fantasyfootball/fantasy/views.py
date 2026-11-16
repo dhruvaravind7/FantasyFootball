@@ -7,16 +7,18 @@ from rest_framework.response import Response
 from django.db import transaction
 
 from league.models import Season
-from .models import FantasyTeam, League, ScoringRules, DraftQueueEntry, RosterEntry
+from .models import FantasyTeam, League, ScoringRules, DraftQueueEntry, RosterEntry, WaiverClaim
 from .permissions import IsCommissionerOrReadOnly, IsOwnerOrCommissioner
 from .rosters import ensure_week
 from .lineups import move
 from .serializers import (FantasyTeamSerializer, JoinSerializer, LeagueSerializer, PresetSerializer, RosterEntrySerializer,
                           ScoringRulesSerializer, TeamIdSerializer, UsernameSerializer, DraftPickSerializer, QueueEntrySerializer, ChoiceSerializer,
-                          LineupMoveSerializer, MatchupSerializer, StandingSerializer, AddSerializer, DropSerializer, RankingSerializer, resolve_choice)
+                          LineupMoveSerializer, MatchupSerializer, StandingSerializer, AddSerializer, DropSerializer, RankingSerializer, ClaimSerializer, 
+                          resolve_choice)
 from .draft import make_pick, pause_draft, resume_draft, team_on_clock, undo_last_pick
 from .scoring import team_week_points
 from .free_agency import add_player, drop_player
+from .waivers import cancel_claim, place_claim
 from .matchups import matchup_scores, standings as league_standings, week_totals
 
 
@@ -61,7 +63,6 @@ class LeagueViewSet(viewsets.ModelViewSet):
         """Delete the league, but only before the draft."""
         self.require_setup(instance, "delete the league")
         instance.delete()
-
 
     @action(detail=False, methods=["post"])
     def join(self, request):
@@ -261,9 +262,15 @@ class FantasyTeamViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, mixin
         )
 
     def require_owner(self, team):
-        """403 unless the logged-in user owns this team or runs its league. Queues are private."""
+        """403 unless the logged-in user owns this team or runs its league. Queues and claims are private."""
         if self.request.user != team.owner and self.request.user != team.league.commissioner:
-            raise PermissionDenied("Only this team's owner can manage its queue")
+            raise PermissionDenied("Only this team's owner can do that.")
+
+    def claims_list(self, team: FantasyTeam) -> Response:
+        """This team's pending claims, in order. Shared by the claim endpoints below."""
+        pending = team.claims.filter(status=WaiverClaim.Status.PENDING).select_related(
+            "player__team", "nfl_team", "drop_player__team", "drop_nfl_team")
+        return Response(ClaimSerializer(pending, many=True).data)
 
     @action(detail=True, methods=["get", "post"])
     def queue(self, request, pk=None):
@@ -365,3 +372,23 @@ class FantasyTeamViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, mixin
         serializer.is_valid(raise_exception=True)
         drop_player(team, serializer.validated_data["entry_id"])
         return self.roster(request)
+
+    @action(detail=True, methods=["get", "post"])
+    def claims(self, request, pk=None):
+        """GET or POST /teams/<id>/claims/: see this team's pending waiver claims, or place a new one."""
+        team = self.get_object()
+        self.require_owner(team)             # claims are private, like the queue
+        if request.method == "POST":
+            serializer = AddSerializer(data=request.data)
+            serializer.is_valid(raise_exception=True)
+            data = serializer.validated_data
+            place_claim(team, **resolve_choice(data), drop_entry_id=data.get("drop_entry_id"))
+        return self.claims_list(team)
+
+    @action(detail=True, methods=["post"], url_path="claims/cancel")
+    def claims_cancel(self, request, pk=None):
+        """POST /teams/<id>/claims/cancel/: cancel one pending claim, then return the rest."""
+        team = self.get_object()
+        self.require_owner(team)
+        cancel_claim(team, request.data.get("claim_id"))
+        return self.claims_list(team)

@@ -10,6 +10,7 @@ from rest_framework.exceptions import ValidationError
 from .matchups import build_schedule
 from .models import DraftPick, DraftQueueEntry, FantasyTeam, League, RosterEntry
 from .rankings import FANTASY_POSITIONS, build_rankings
+from .waiver_clock import set_initial_priority
 
 logger = logging.getLogger(__name__)
 
@@ -211,6 +212,7 @@ def finish_draft(league):
     league.current_pick, league.pick_deadline = None, None
     league.save(update_fields=["status", "current_pick", "pick_deadline"])
     build_schedule(league)
+    set_initial_priority(league)
 
 @transaction.atomic
 def pause_draft(league) -> None:

@@ -1,6 +1,7 @@
 from collections import Counter
 
 from django.db import IntegrityError, transaction
+from django.utils import timezone
 from rest_framework.exceptions import ValidationError
 
 from league.models import Player, Team
@@ -10,6 +11,7 @@ from .lineups import entry_nfl_team_id, entry_position, healthy_on_ir, started_t
 from .models import FantasyTeam, League, RosterEntry
 from .rankings import FANTASY_POSITIONS
 from .rosters import ensure_week
+from .waiver_clock import describe, start_hold, waiver_clears_at
 
 
 def current_entries(team: FantasyTeam) -> tuple[int, dict[int, RosterEntry]]:
@@ -24,8 +26,8 @@ def current_entries(team: FantasyTeam) -> tuple[int, dict[int, RosterEntry]]:
 
 @transaction.atomic
 def add_player(team: FantasyTeam, player: Player | None = None, nfl_team: Team | None = None,
-               drop_entry_id: int | None = None) -> RosterEntry:
-    """Add a free agent (a player OR a D/ST) to this week's roster, dropping `drop_entry_id` first if given."""
+               drop_entry_id: int | None = None, via_waivers: bool = False) -> RosterEntry:
+    """Add a free agent (or, with via_waivers, a waiver claim winner) to this week's roster, dropping `drop_entry_id` first if given."""
     league = team.league
     week, entries = current_entries(team)
 
@@ -49,8 +51,10 @@ def add_player(team: FantasyTeam, player: Player | None = None, nfl_team: Team |
 
     # 3. Locked? (the added player's game, and the dropped player's game)
     started = started_team_ids(league.season, week)
-    if nfl_team_id in started:
-        raise ValidationError({"detail": f"{player if player else nfl_team}'s game has started; he can't be added until next week."})
+    if not via_waivers:
+        clears = waiver_clears_at(team.league, player, nfl_team, timezone.now())
+        if clears is not None:
+            raise ValidationError({"detail": f"He's on waivers until {describe(clears)}. Place a waiver claim."})
 
     drop = None
     if drop_entry_id is not None:
@@ -71,6 +75,7 @@ def add_player(team: FantasyTeam, player: Player | None = None, nfl_team: Team |
     # 5. Do it: drop first (frees his spot), then add to the bench. The savepoint catches a same-instant double add.
     if drop:
         drop.delete()
+        start_hold(team.league, drop.player, drop.nfl_team)
     try:
         with transaction.atomic():
             return RosterEntry.objects.create(team=team, league=league, week=week, player=player, nfl_team=nfl_team)
@@ -92,3 +97,5 @@ def drop_player(team: FantasyTeam, entry_id: int) -> None:
     if entry_nfl_team_id(entry) in started_team_ids(league.season, week):
         raise ValidationError({"detail": f"{entry}'s game has started; he can't be dropped until next week."})
     entry.delete()
+    start_hold(league, entry.player, entry.nfl_team)
+    

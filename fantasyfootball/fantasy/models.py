@@ -79,6 +79,29 @@ class League(models.Model):
             if not League.objects.filter(invite_code=code).exists():
                 return code
 
+class Matchup(models.Model):
+    """One head-to-head game between two fantasy teams in one week."""
+    league = models.ForeignKey(League, on_delete=models.CASCADE, related_name="matchups")
+    week = models.PositiveSmallIntegerField()
+    home = models.ForeignKey("FantasyTeam", on_delete=models.CASCADE, related_name="home_matchups")
+    away = models.ForeignKey("FantasyTeam", on_delete=models.CASCADE, related_name="away_matchups")
+    home_score = models.DecimalField(max_digits=6, decimal_places=2, null=True, blank=True)   # saved when the week is final
+    away_score = models.DecimalField(max_digits=6, decimal_places=2, null=True, blank=True)
+    is_final = models.BooleanField(default=False)
+    playoff_round = models.PositiveSmallIntegerField(null=True, blank=True)
+    bracket_slot = models.PositiveSmallIntegerField(null=True, blank=True)
+
+    class Meta:
+        ordering = ["league", "week", "id"]
+        constraints = [
+            models.UniqueConstraint(fields=["league", "week", "home"], name="one_home_game_per_team_per_week"),
+            models.UniqueConstraint(fields=["league", "week", "away"], name="one_away_game_per_team_per_week"),
+            models.CheckConstraint(condition=~Q(home=F("away")), name="home_team_differs_from_away_team")
+        ]
+
+    def __str__(self):
+        """'Week 9: Bot 1 @ Me'"""
+        return f"Week {self.week}: {self.away.name} @ {self.home.name}"
 
 class FantasyTeam(models.Model):
     league = models.ForeignKey(League, on_delete=models.CASCADE, related_name="teams")
@@ -88,6 +111,7 @@ class FantasyTeam(models.Model):
     draft_position = models.PositiveSmallIntegerField(null=True, blank=True)
     autodraft = models.BooleanField(default=False)
     playoff_seed = models.PositiveSmallIntegerField(null=True, blank=True)
+    waiver_priority = models.PositiveSmallIntegerField(null=True, blank=True)
 
     class Meta:
         constraints = [
@@ -130,6 +154,47 @@ class RosterEntry(models.Model):
         if self.nfl_team_id is None:
             return f"{self.player.first_name} {self.player.last_name} ({self.player.position})"
         return f"{self.nfl_team.city} {self.nfl_team.name} D/ST"
+
+class WaiverClaim(models.Model):
+    """One team's claim on a player on waivers, with an optional player to drop if it wins."""
+    class Status(models.TextChoices):
+        PENDING = "PENDING", "Pending"
+        WON = "WON", "Won"
+        LOST = "LOST", "Lost"            # another team got him first
+        FAILED = "FAILED", "Failed"      # couldn't be done (roster full, drop already gone, ...)
+
+    team = models.ForeignKey(FantasyTeam, on_delete=models.CASCADE, related_name="claims")
+    player = models.ForeignKey("league.Player", on_delete=models.CASCADE, null=True, blank=True, related_name="+")
+    nfl_team = models.ForeignKey("league.Team", on_delete=models.CASCADE, null=True, blank=True, related_name="+")
+    drop_player = models.ForeignKey("league.Player", on_delete=models.CASCADE, null=True, blank=True, related_name="+")
+    drop_nfl_team = models.ForeignKey("league.Team", on_delete=models.CASCADE, null=True, blank=True, related_name="+")
+    order = models.PositiveSmallIntegerField()                 # this team's own ranking of its claims, 1 first
+    status = models.CharField(max_length=10, choices=Status.choices, default=Status.PENDING)
+    note = models.CharField(max_length=200, blank=True)        # why it lost or failed (13b fills it in)
+    created_at = models.DateTimeField(auto_now_add=True)
+    processed_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ["team", "order"]
+        constraints = [
+            models.CheckConstraint(condition=Q(player__isnull=False, nfl_team__isnull=True) | Q(player__isnull=True, nfl_team__isnull=False), name="claim_player_or_dst_not_both"),
+            models.UniqueConstraint(fields=["team", "player"], condition=Q(status="PENDING"), name="one_pending_claim_per_player"),
+            models.UniqueConstraint(fields=["team", "nfl_team"], condition=Q(status="PENDING"), name="one_pending_claim_per_nfl_team")
+        ]
+
+class WaiverHold(models.Model):
+    """A dropped player (or D/ST) that's on waivers in one league until `clears_at`."""
+    league = models.ForeignKey(League, on_delete=models.CASCADE, related_name="waiver_holds")
+    player = models.ForeignKey("league.Player", on_delete=models.CASCADE, null=True, blank=True, related_name="+")
+    nfl_team = models.ForeignKey("league.Team", on_delete=models.CASCADE, null=True, blank=True, related_name="+")
+    clears_at = models.DateTimeField()
+
+    class Meta:
+        constraints = [
+            models.CheckConstraint(condition=Q(player__isnull=False, nfl_team__isnull=True) | Q(player__isnull=True, nfl_team__isnull=False), name="hold_player_or_dst_not_both"),
+            models.UniqueConstraint(fields=["league", "player"], name="one_hold_per_player_per_league"),
+            models.UniqueConstraint(fields=["league", "nfl_team"], name="one_hold_per_nfl_team_per_league"),
+        ]
 
 def points(default):
     """A scoring value like 0.04 or -2. max 999.99, 2 decimal places."""
@@ -193,30 +258,6 @@ class DraftQueueEntry(models.Model):
             models.UniqueConstraint(fields=["team", "player"], name="one_player_per_queue"),
             models.UniqueConstraint(fields=["team", "nfl_team"], name="one_defense_per_queue")
         ]
-
-class Matchup(models.Model):
-    """One head-to-head game between two fantasy teams in one week."""
-    league = models.ForeignKey(League, on_delete=models.CASCADE, related_name="matchups")
-    week = models.PositiveSmallIntegerField()
-    home = models.ForeignKey(FantasyTeam, on_delete=models.CASCADE, related_name="home_matchups")
-    away = models.ForeignKey(FantasyTeam, on_delete=models.CASCADE, related_name="away_matchups")
-    home_score = models.DecimalField(max_digits=6, decimal_places=2, null=True, blank=True)   # saved when the week is final
-    away_score = models.DecimalField(max_digits=6, decimal_places=2, null=True, blank=True)
-    is_final = models.BooleanField(default=False)
-    playoff_round = models.PositiveSmallIntegerField(null=True, blank=True)
-    bracket_slot = models.PositiveSmallIntegerField(null=True, blank=True)
-
-    class Meta:
-        ordering = ["league", "week", "id"]
-        constraints = [
-            models.UniqueConstraint(fields=["league", "week", "home"], name="one_home_game_per_team_per_week"),
-            models.UniqueConstraint(fields=["league", "week", "away"], name="one_away_game_per_team_per_week"),
-            models.CheckConstraint(condition=~Q(home=F("away")), name="home_team_differs_from_away_team")
-        ]
-
-    def __str__(self):
-        """'Week 9: Bot 1 @ Me'"""
-        return f"Week {self.week}: {self.away.name} @ {self.home.name}"
 
 class ScoringRules(models.Model):
     """How many fantasy points each stat is worth in one league. The defaults are ESPN's PPR."""

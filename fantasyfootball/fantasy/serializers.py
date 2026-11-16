@@ -4,15 +4,15 @@ from django.db import transaction
 from rest_framework.exceptions import ValidationError, NotFound
 from league.serializers import PlayerSerializer, TeamSerializer
 
-from .models import FantasyTeam, League, ScoringRules, RosterEntry, DraftPick, DraftQueueEntry, PlayerRanking, Matchup
+from .models import FantasyTeam, League, ScoringRules, RosterEntry, DraftPick, DraftQueueEntry, PlayerRanking, Matchup, WaiverClaim
 
 class FantasyTeamSerializer(serializers.ModelSerializer):
     owner = serializers.CharField(source="owner.username", allow_null=True, read_only=True)
 
     class Meta:
         model = FantasyTeam
-        fields = ["id", "name", "owner", "playoff_seed"]
-        read_only_fields = ["playoff_seed"]
+        fields = ["id", "name", "owner", "playoff_seed", "waiver_priority"]
+        read_only_fields = ["playoff_seed", "waiver_priority"]
 
     def validate_name(self, value):
         taken = FantasyTeam.objects.filter(league=self.instance.league, name__iexact=value).exclude(pk=self.instance.pk)
@@ -179,3 +179,14 @@ class StandingSerializer(serializers.Serializer):
     win_pct = serializers.DecimalField(max_digits=4, decimal_places=3)      # "0.750"
     points_for = serializers.DecimalField(max_digits=7, decimal_places=2)
     points_against = serializers.DecimalField(max_digits=7, decimal_places=2)
+
+class ClaimSerializer(serializers.ModelSerializer):
+    """One waiver claim: who's claimed, who'd be dropped, and how it turned out."""
+    player = PlayerSerializer(read_only=True)
+    dst = serializers.CharField(source="nfl_team.abbreviation", allow_null=True, read_only=True)
+    drop_player = PlayerSerializer(read_only=True)                        # same as player
+    drop_dst = serializers.CharField(source="drop_nfl_team.abbreviation", allow_null=True, read_only=True)
+
+    class Meta:
+        model = WaiverClaim
+        fields = ["id", "order", "player", "dst", "drop_player", "drop_dst", "status", "note", "created_at", "processed_at"]
