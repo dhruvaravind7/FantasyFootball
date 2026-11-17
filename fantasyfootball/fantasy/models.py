@@ -40,6 +40,7 @@ class League(models.Model):
     paused_seconds_left = models.PositiveSmallIntegerField(blank=True, null=True)
 
     playoff_teams = models.PositiveSmallIntegerField(default=4)      # 4 or 6
+    last_waiver_run = models.DateTimeField(null=True, blank=True)
 
     @property
     def roster_size(self) -> int:

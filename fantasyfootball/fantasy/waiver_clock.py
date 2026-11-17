@@ -54,6 +54,14 @@ def next_run(after: datetime) -> datetime:
         run += timedelta(days=1)
     return run
 
+def last_run(now: datetime) -> datetime:
+    """The most recent 3 AM Eastern run at or before `now`."""
+    local = now.astimezone(EASTERN)
+    run = local.replace(hour=RUN_HOUR, minute=0, second=0, microsecond=0)
+    if run > local:                                  # today's run hasn't happened yet, so the last one was yesterday's
+        run -= timedelta(days=1)
+    return run
+
 def describe(when: datetime) -> str:
     """'Tue Nov 17, 3:00 AM ET': a waiver time for error messages."""
     return when.astimezone(EASTERN).strftime("%a %b %-d, %-I:%M %p ET")
