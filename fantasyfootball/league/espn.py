@@ -55,4 +55,9 @@ def fetch_summary(game_espn_id: str) -> dict:
     """ESPN's game summary: box score (players and teams), scoring plays, and more."""
     url = f"{BASE}/summary"
     params = {"event": game_espn_id}
-    return get_json(url, params=params)       # the whole dict, not just ["boxscore"]["players"]
+    return get_json(url, params=params)
+
+def fetch_injuries() -> list[dict]:
+    """Every injury in ESPN's league-wide report, as one flat list."""
+    data = get_json(f"{BASE}/injuries")
+    return [injury for team in data["injuries"] for injury in team["injuries"]]

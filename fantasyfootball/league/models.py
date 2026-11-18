@@ -104,6 +104,7 @@ class Player(models.Model):
     roster_status = models.CharField(max_length=20, choices=RosterStatus.choices, blank=True)
     injury_status = models.CharField(max_length=20, choices=InjuryStatus.choices, blank=True) 
     nfl_draft_pick = models.PositiveSmallIntegerField(null=True, blank=True)
+    return_date = models.DateField(null=True, blank=True)
     gsis_id = models.CharField(max_length=20, unique=True, null=True, blank=True)
     espn_id = models.CharField(max_length=20, unique=True, null=True, blank=True)
     

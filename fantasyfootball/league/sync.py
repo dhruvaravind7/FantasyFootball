@@ -1,4 +1,5 @@
-from datetime import datetime
+import re
+from datetime import date, datetime
 from decimal import Decimal
 
 from django.db import transaction
@@ -10,6 +11,8 @@ from league.espn import ESPNFormatError
 from league.models import Game, Season, Team, Player, PlayerGameStats, TeamGameStats
 from plays.models import Play, PlayParticipant
 from collections import defaultdict
+
+ATHLETE_ID = re.compile(r"/id/(\d+)")
 
 # A TD is only "offensive" if it was a run or pass by the team that had the ball
 OFFENSE_PLAY_TYPES = {Play.PlayType.RUN, Play.PlayType.PASS}
@@ -340,3 +343,24 @@ def sync_play_stats(game: Game) -> None:
         for field in PLAY_STAT_FIELDS:
             setattr(line, field, counts[line.player_id][field])
     PlayerGameStats.objects.bulk_update(lines, PLAY_STAT_FIELDS)
+
+
+def sync_return_dates() -> int:
+    """Save each injured player's expected return date from ESPN, clearing it for everyone no longer listed. Returns how many were set."""
+    # 1. {espn id: return date} for every injury that has both a returnDate and a player link
+    dates = {}
+    for injury in espn.fetch_injuries():
+        returns = (injury.get("details") or {}).get("returnDate")      # "details" can be null
+        link = next((l["href"] for l in injury["athlete"].get("links", []) if "/id/" in l["href"]), None)
+        if returns and link:
+            dates[ATHLETE_ID.search(link).group(1)] = date.fromisoformat(returns)
+
+    # 2. Healed (no longer listed) -> clear the date
+    Player.objects.exclude(return_date=None).exclude(espn_id__in=dates).update(return_date=None)
+
+    # 3. Everyone listed -> set it, in one query
+    players = list(Player.objects.filter(espn_id__in=dates))
+    for player in players:
+        player.return_date = dates[player.espn_id]
+    Player.objects.bulk_update(players, ["return_date"])
+    return len(players)

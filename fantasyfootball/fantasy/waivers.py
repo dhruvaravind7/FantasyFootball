@@ -17,16 +17,18 @@ def process_due_waivers(now: datetime | None = None) -> int:
     """Run the latest due 3 AM waiver run for every in-season league that hasn't had it. Returns how many claims won."""
     run_at = last_run(now or timezone.now())
     due = League.objects.filter(status=League.Status.IN_SEASON).filter(Q(last_waiver_run=None) | Q(last_waiver_run__lt=run_at))     # never run, OR last run before run_at
-    return sum(process_league(league, run_at) for league in due)
+    return sum(process_league_claims(league, run_at) for league in due)
 
 @transaction.atomic
-def process_league(league: League, run_at: datetime) -> int:
+def process_league_claims(league: League, run_at: datetime) -> int:
     """Process this league's ready claims for the `run_at` waiver run using rolling priority. Returns how many claims won."""
     # 1. Lock the league so two passes can't process the same run; skip if this run is already done
     league = League.objects.select_for_update().select_related("season").get(pk=league.pk)
     if league.last_waiver_run is not None and league.last_waiver_run >= run_at:
         return 0
     week = league.season.current_week
+    from .bots import bot_moves
+    bot_moves(league)
 
     # 2. Ready claims, grouped per team in the team's own order ({team id: [claim, claim, ...]})
     queues = defaultdict(list)
