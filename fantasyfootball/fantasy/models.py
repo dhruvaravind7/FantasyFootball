@@ -41,6 +41,7 @@ class League(models.Model):
 
     playoff_teams = models.PositiveSmallIntegerField(default=4)      # 4 or 6
     last_waiver_run = models.DateTimeField(null=True, blank=True)
+    lineups_checked_at = models.DateTimeField(null=True, blank=True)
 
     @property
     def roster_size(self) -> int:

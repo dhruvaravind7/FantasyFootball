@@ -345,22 +345,27 @@ def sync_play_stats(game: Game) -> None:
     PlayerGameStats.objects.bulk_update(lines, PLAY_STAT_FIELDS)
 
 
-def sync_return_dates() -> int:
-    """Save each injured player's expected return date from ESPN, clearing it for everyone no longer listed. Returns how many were set."""
-    # 1. {espn id: return date} for every injury that has both a returnDate and a player link
-    dates = {}
+def sync_injuries() -> int:
+    """Save every listed player's injury status and return date from ESPN's injury report. Anyone not listed is healthy. Returns how many were listed."""
+    # 1. {espn id: status} and {espn id: return date}
+    statuses, dates = {}, {}
     for injury in espn.fetch_injuries():
-        returns = (injury.get("details") or {}).get("returnDate")      # "details" can be null
         link = next((l["href"] for l in injury["athlete"].get("links", []) if "/id/" in l["href"]), None)
-        if returns and link:
-            dates[ATHLETE_ID.search(link).group(1)] = date.fromisoformat(returns)
+        if link is None:
+            continue
+        espn_id = ATHLETE_ID.search(link).group(1)
+        statuses[espn_id] = "" if injury["status"] == "Active" else INJURY_MAP.get(injury["status"]) or ""
+        returns = (injury.get("details") or {}).get("returnDate")
+        if returns:
+            dates[espn_id] = date.fromisoformat(returns)
 
-    # 2. Healed (no longer listed) -> clear the date
-    Player.objects.exclude(return_date=None).exclude(espn_id__in=dates).update(return_date=None)
+    # 2. Not listed anymore -> healthy: clear BOTH fields (skip players who are already clear)
+    Player.objects.exclude(espn_id__in=statuses).exclude(injury_status="", return_date=None).update(injury_status="", return_date=None)
 
-    # 3. Everyone listed -> set it, in one query
-    players = list(Player.objects.filter(espn_id__in=dates))
+    # 3. Everyone listed -> both fields, in one query
+    players = list(Player.objects.filter(espn_id__in=statuses))
     for player in players:
-        player.return_date = dates[player.espn_id]
-    Player.objects.bulk_update(players, ["return_date"])
+        player.injury_status = statuses[player.espn_id]
+        player.return_date = dates.get(player.espn_id)             # None when ESPN gave no date
+    Player.objects.bulk_update(players, ["injury_status", "return_date"])
     return len(players)

@@ -10,10 +10,10 @@ class Command(BaseCommand):
         try:
             teams = sync.sync_teams()
             players = sync.sync_players()
-            injured = sync.sync_return_dates()
+            injured = sync.sync_injuries()
         except ESPNFormatError as e:
             raise CommandError(str(e))
 
         self.stdout.write(f"Synced {len(teams)} teams")
         self.stdout.write(f"Synced {len(players)} players")
-        self.stdout.write(f"Synced {injured} return dates")
+        self.stdout.write(f"Synced {injured} injury reports")

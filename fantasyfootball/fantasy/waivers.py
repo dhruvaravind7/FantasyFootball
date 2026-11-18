@@ -12,6 +12,8 @@ from .free_agency import add_player, current_entries
 from .models import FantasyTeam, League, RosterEntry, WaiverClaim
 from .rankings import FANTASY_POSITIONS
 from .waiver_clock import last_run, waiver_clears_at
+from .bot_lineups import set_bot_lineups
+
 
 def process_due_waivers(now: datetime | None = None) -> int:
     """Run the latest due 3 AM waiver run for every in-season league that hasn't had it. Returns how many claims won."""
@@ -71,6 +73,7 @@ def process_league_claims(league: League, run_at: datetime) -> int:
     for position, team in enumerate(order, 1):
         team.waiver_priority = position
     league.teams.bulk_update(order, ["waiver_priority"])
+    set_bot_lineups(league)
     league.last_waiver_run = run_at
     league.save(update_fields=["last_waiver_run"])
     return won
