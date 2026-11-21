@@ -5,22 +5,25 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
 from django.db import transaction
+from django.db.models import Q
 
 from league.models import Season
-from .models import FantasyTeam, League, ScoringRules, DraftQueueEntry, RosterEntry, WaiverClaim
+from .models import FantasyTeam, League, ScoringRules, DraftQueueEntry, RosterEntry, WaiverClaim, Trade
 from .permissions import IsCommissionerOrReadOnly, IsOwnerOrCommissioner
 from .rosters import ensure_week
 from .lineups import move
 from .serializers import (FantasyTeamSerializer, JoinSerializer, LeagueSerializer, PresetSerializer, RosterEntrySerializer,
                           ScoringRulesSerializer, TeamIdSerializer, UsernameSerializer, DraftPickSerializer, QueueEntrySerializer, ChoiceSerializer,
-                          LineupMoveSerializer, MatchupSerializer, StandingSerializer, AddSerializer, DropSerializer, RankingSerializer, ClaimSerializer, 
-                          resolve_choice)
+                          LineupMoveSerializer, MatchupSerializer, StandingSerializer, AddSerializer, DropSerializer, RankingSerializer, ClaimSerializer,
+                          TradeSerializer, ProposeSerializer, DropsSerializer, resolve_choice)
 from .draft import make_pick, pause_draft, resume_draft, team_on_clock, undo_last_pick
 from .scoring import team_week_points
 from .free_agency import add_player, drop_player
 from .waivers import cancel_claim, place_claim
 from .matchups import matchup_scores, standings as league_standings, week_totals
+from .trades import propose_trade, accept_trade, close_trade
 
+TRADE_LOADS = ("items__team", "items__player__team", "items__nfl_team")
 
 def requested_week(request, season: Season) -> int | None:
     """?week= as an int, or the season's current week when it's not given. 400 if it's not a number."""
@@ -392,3 +395,65 @@ class FantasyTeamViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, mixin
         self.require_owner(team)
         cancel_claim(team, request.data.get("claim_id"))
         return self.claims_list(team)
+
+    @action(detail=True, methods=["get", "post"])
+    def trades(self, request, pk=None):
+        """GET or POST /teams/<id>/trades/: this team's open trades, or propose a new one."""
+        team = self.get_object()
+        self.require_owner(team)
+        if request.method == "POST":
+            serializer = ProposeSerializer(data=request.data)
+            serializer.is_valid(raise_exception=True)
+            data = serializer.validated_data
+            receiver = FantasyTeam.objects.filter(league=team.league, id=data["receiver_id"]).first()
+            if receiver is None:
+                raise ValidationError({"receiver_id": "Pick another team in your league."})
+            propose_trade(proposer=team, receiver=receiver, send_ids=data["send_entry_ids"], receive_ids=data["receive_entry_ids"],
+                          drop_ids=data["drop_entry_ids"])
+
+        open_trades = (Trade.objects.filter(Q(proposer=team) | Q(receiver=team), status__in=[Trade.Status.PROPOSED, Trade.Status.ACCEPTED])
+                       .select_related("proposer", "receiver").prefetch_related(*TRADE_LOADS))
+        return Response(TradeSerializer(open_trades, many=True).data)
+
+
+class TradeViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, viewsets.GenericViewSet):
+    """GET /trades/ and /trades/<id>/: trades you're part of (or run the league of), plus accept/decline/cancel."""
+    serializer_class = TradeSerializer
+    permission_classes = [IsAuthenticated]
+
+    def get_queryset(self):
+        """Trades where the user owns either team, or is the league's commissioner."""
+        user = self.request.user
+        return (Trade.objects.filter(Q(proposer__owner=user) | Q(receiver__owner=user) | Q(league__commissioner=user))
+                .select_related("proposer", "receiver", "league__season").prefetch_related(*TRADE_LOADS))
+
+    def require_owner_of(self, team: FantasyTeam) -> None:
+        """403 unless the logged-in user owns `team`. The commissioner can't answer for someone else."""
+        if self.request.user != team.owner:
+            raise PermissionDenied(f"Only {team.name}'s owner can do that.")
+
+    @action(detail=True, methods=["post"])
+    def accept(self, request, pk=None):
+        """POST /trades/<id>/accept/: the receiver accepts (optional drop_entry_ids). Starts the 2-day review."""
+        trade = self.get_object()
+        self.require_owner_of(trade.receiver)
+        serializer = DropsSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        accept_trade(trade, serializer.validated_data["drop_entry_ids"])
+        return Response(TradeSerializer(self.get_object()).data)     # re-read: get_object() returns the saved state
+
+    @action(detail=True, methods=["post"])
+    def decline(self, request, pk=None):
+        """POST /trades/<id>/decline/: the receiver says no."""
+        trade = self.get_object()
+        self.require_owner_of(trade.receiver)
+        close_trade(trade, Trade.Status.DECLINED)
+        return Response(TradeSerializer(self.get_object()).data)     # re-read: get_object() returns the saved state
+
+    @action(detail=True, methods=["post"])
+    def cancel(self, request, pk=None):
+        """POST /trades/<id>/cancel/: the proposer withdraws the offer."""
+        trade = self.get_object()
+        self.require_owner_of(trade.proposer)
+        close_trade(trade, Trade.Status.CANCELLED)
+        return Response(TradeSerializer(self.get_object()).data)     # re-read: get_object() returns the saved state

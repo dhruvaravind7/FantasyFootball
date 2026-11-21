@@ -4,7 +4,7 @@ from django.db import transaction
 from rest_framework.exceptions import ValidationError, NotFound
 from league.serializers import PlayerSerializer, TeamSerializer
 
-from .models import FantasyTeam, League, ScoringRules, RosterEntry, DraftPick, DraftQueueEntry, PlayerRanking, Matchup, WaiverClaim
+from .models import PLAYOFF_LAST_WEEK, FantasyTeam, League, ScoringRules, RosterEntry, DraftPick, DraftQueueEntry, PlayerRanking, Matchup, WaiverClaim, Trade, TradeItem
 
 class FantasyTeamSerializer(serializers.ModelSerializer):
     owner = serializers.CharField(source="owner.username", allow_null=True, read_only=True)
@@ -29,7 +29,7 @@ class LeagueSerializer(serializers.ModelSerializer):
         model = League
         fields = ["id", "name", "size", "status", "invite_code", "commissioner",
                   "qb_slots", "rb_slots", "wr_slots", "te_slots", "flex_slots", "dst_slots", "k_slots", "bench_slots",
-                  "teams", "team_name", "draft_time", "pick_seconds", "current_pick", "pick_deadline", "playoff_teams"]
+                  "teams", "team_name", "draft_time", "pick_seconds", "current_pick", "pick_deadline", "playoff_teams", "trade_deadline"]
         read_only_fields = ["status", "invite_code", "current_pick", "pick_deadline"]
 
     def validate_size(self, value):
@@ -50,9 +50,14 @@ class LeagueSerializer(serializers.ModelSerializer):
         return value
 
     def validate(self, data: dict) -> dict:
-        """Playoff teams can't outnumber the league. On a PATCH, a field that wasn't sent keeps its saved value."""
+        """Playoff teams can't outnumber the league, and the trade deadline must be a regular-season week.
+        On a PATCH, a field that wasn't sent keeps its saved value."""
         size = data.get("size", self.instance.size if self.instance else 10)
         playoff_teams = data.get("playoff_teams", self.instance.playoff_teams if self.instance else 4)     # saved value, or 4 when creating
+        trade_deadline = data.get("trade_deadline", self.instance.trade_deadline if self.instance else 12)
+        last_regular_week = PLAYOFF_LAST_WEEK - (3 if playoff_teams == 6 else 2)     # 14 with 6 playoff teams, 15 with 4
+        if not 1 <= trade_deadline <= last_regular_week:
+            raise ValidationError({"trade_deadline": f"Must be a regular-season week (1-{last_regular_week})."})
         if playoff_teams > size:
             raise ValidationError({"playoff_teams": f"A {size}-team league can't have {playoff_teams} playoff teams."})
         return data
@@ -190,3 +195,37 @@ class ClaimSerializer(serializers.ModelSerializer):
     class Meta:
         model = WaiverClaim
         fields = ["id", "order", "player", "dst", "drop_player", "drop_dst", "status", "note", "created_at", "processed_at"]
+
+class TradeItemSerializer(serializers.ModelSerializer):
+    """One player in a trade: who gives him up, whether he's sent or dropped, and who he is."""
+    team = serializers.CharField(source="team.name", read_only=True)
+    player = PlayerSerializer(read_only=True)
+    dst = serializers.CharField(source="nfl_team.abbreviation", allow_null=True, read_only=True)
+
+    class Meta:
+        model = TradeItem
+        fields = ["team", "kind", "player", "dst"]
+
+
+class TradeSerializer(serializers.ModelSerializer):
+    """A trade with both teams' names and every item."""
+    proposer = serializers.CharField(source="proposer.name", read_only=True)
+    receiver = serializers.CharField(source="receiver.name", read_only=True)
+    items = TradeItemSerializer(many=True, read_only=True)
+
+    class Meta:
+        model = Trade
+        fields = ["id", "proposer", "receiver", "status", "note", "items", "created_at", "responded_at", "review_ends_at"]
+
+
+class ProposeSerializer(serializers.Serializer):
+    """Input for a proposal: the other team, the rows each side sends (at least one each), and optional drops."""
+    receiver_id = serializers.IntegerField()
+    send_entry_ids = serializers.ListField(child=serializers.IntegerField(), allow_empty=False)
+    receive_entry_ids = serializers.ListField(child=serializers.IntegerField(), allow_empty=False)
+    drop_entry_ids = serializers.ListField(child=serializers.IntegerField(), required=False, default=list)
+
+
+class DropsSerializer(serializers.Serializer):
+    """Input for an accept: optional drops."""
+    drop_entry_ids = serializers.ListField(child=serializers.IntegerField(), required=False, default=list)

@@ -42,6 +42,7 @@ class League(models.Model):
     playoff_teams = models.PositiveSmallIntegerField(default=4)      # 4 or 6
     last_waiver_run = models.DateTimeField(null=True, blank=True)
     lineups_checked_at = models.DateTimeField(null=True, blank=True)
+    trade_deadline = models.PositiveSmallIntegerField(default=12)
 
     @property
     def roster_size(self) -> int:
@@ -196,6 +197,52 @@ class WaiverHold(models.Model):
             models.CheckConstraint(condition=Q(player__isnull=False, nfl_team__isnull=True) | Q(player__isnull=True, nfl_team__isnull=False), name="hold_player_or_dst_not_both"),
             models.UniqueConstraint(fields=["league", "player"], name="one_hold_per_player_per_league"),
             models.UniqueConstraint(fields=["league", "nfl_team"], name="one_hold_per_nfl_team_per_league"),
+        ]
+
+class Trade(models.Model):
+    """One trade offer between two teams, from proposal to completion."""
+    class Status(models.TextChoices):
+        PROPOSED = "PROPOSED", "Proposed"        # waiting for the receiver
+        ACCEPTED = "ACCEPTED", "Accepted"        # in the 2-day review (14b)
+        DECLINED = "DECLINED", "Declined"
+        CANCELLED = "CANCELLED", "Cancelled"
+        VETOED = "VETOED", "Vetoed"              # 14b
+        COMPLETED = "COMPLETED", "Completed"     # 14b: the players moved
+        FAILED = "FAILED", "Failed"              # 14b: rosters changed so it couldn't go through
+
+    league = models.ForeignKey(League, on_delete=models.CASCADE, related_name="trades")
+    proposer = models.ForeignKey(FantasyTeam, on_delete=models.CASCADE, related_name="trades_proposed")
+    receiver = models.ForeignKey(FantasyTeam, on_delete=models.CASCADE, related_name="trades_received")
+    status = models.CharField(max_length=10, choices=Status.choices, default=Status.PROPOSED)
+    note = models.CharField(max_length=200, blank=True)      # why it was declined or failed
+    created_at = models.DateTimeField(auto_now_add=True)
+    responded_at = models.DateTimeField(null=True, blank=True)      # when it was accepted, declined or cancelled; empty until then
+    review_ends_at = models.DateTimeField(null=True, blank=True)      # accepted + 2 days; empty until accepted
+    processed_at = models.DateTimeField(null=True, blank=True)      # when 14b moved the players (or failed); empty until then
+
+    class Meta:
+        ordering = ["-created_at"]           # newest first
+        constraints = [
+            models.CheckConstraint(condition=~Q(proposer=F("receiver")), name="trade_with_another_team")
+        ]
+
+
+class TradeItem(models.Model):
+    """One player or D/ST in a trade: sent by `team` to the other side, or dropped by `team` to make room."""
+    class Kind(models.TextChoices):
+        SEND = "SEND", "Send"
+        DROP = "DROP", "Drop"
+
+    trade = models.ForeignKey(Trade, on_delete=models.CASCADE, related_name="items")
+    team = models.ForeignKey(FantasyTeam, on_delete=models.CASCADE, related_name="+")     # who gives him up
+    player = models.ForeignKey("league.Player", null=True, blank=True, on_delete=models.CASCADE, related_name="+")
+    nfl_team = models.ForeignKey("league.Team", null=True, blank=True, on_delete=models.CASCADE, related_name="+")
+    kind = models.CharField(max_length=4, choices=Kind.choices)
+
+    class Meta:
+        constraints = [
+            models.CheckConstraint(condition=Q(player__isnull=False, nfl_team__isnull=True) | Q(player__isnull=True, nfl_team__isnull=False),
+                                   name="trade_item_player_or_dst_not_both")
         ]
 
 def points(default):
