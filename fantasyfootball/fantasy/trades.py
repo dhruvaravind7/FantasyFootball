@@ -1,16 +1,74 @@
 from collections import Counter
-from datetime import timedelta
+from datetime import timedelta, datetime
 
 from django.db import transaction
+from django.db.models import Q
 from django.utils import timezone
 from rest_framework.exceptions import ValidationError
 
 from .draft import POSITION_LIMITS
 from .free_agency import current_entries
-from .lineups import entry_position
-from .models import FantasyTeam, League, RosterEntry, Trade, TradeItem
+from .lineups import entry_position, entry_nfl_team_id, started_team_ids
+from .models import FantasyTeam, League, RosterEntry, Trade, TradeItem, WaiverClaim
+from .waiver_clock import start_hold
+from .waivers import first_error
 
+PUBLIC_STATUSES = [Trade.Status.ACCEPTED, Trade.Status.VETOED, Trade.Status.COMPLETED]   # everyone in the league can see these
 REVIEW_DAYS = 2
+
+
+def process_due_trades(now: datetime | None = None) -> int:
+    """Process every ACCEPTED trade whose review has ended. Returns how many finished (completed or failed)."""
+    now = now or timezone.now()
+    due = Trade.objects.filter(status=Trade.Status.ACCEPTED, review_ends_at__lte=now)
+    return sum(1 for trade in due if process_trade(trade))
+
+
+@transaction.atomic
+def process_trade(trade: Trade) -> bool:
+    """Move the players of an accepted trade whose review is over. Returns False when it must wait (a player is locked)
+    or isn't ACCEPTED anymore; True when it finished (COMPLETED or FAILED)."""
+    trade = Trade.objects.select_for_update().select_related("league__season", "proposer", "receiver").get(pk=trade.pk)
+    if trade.status != Trade.Status.ACCEPTED:
+        return False                         # vetoed, or failed by another trade since the list was made
+
+    # 1. Find every row again, and check locks and fits. Any 400 here means the trade fails.
+    try:
+        week, proposer_rows = current_entries(trade.proposer)
+        _, receiver_rows = current_entries(trade.receiver)
+        items = list(trade.items.select_related("team", "player", "nfl_team"))
+
+        def side(team: FantasyTeam, kind: str, rows: dict[int, RosterEntry]) -> list[RosterEntry]:
+            """This team's items of this kind, as this week's rows."""
+            return rows_for([i for i in items if i.team_id == team.id and i.kind == kind], rows)
+
+        p_send, p_drop = side(trade.proposer, TradeItem.Kind.SEND, proposer_rows), side(trade.proposer, TradeItem.Kind.DROP, proposer_rows)
+        r_send, r_drop = side(trade.receiver, TradeItem.Kind.SEND, receiver_rows), side(trade.receiver, TradeItem.Kind.DROP, receiver_rows)
+
+        started = started_team_ids(trade.league.season, week)
+        if any(entry_nfl_team_id(e) in started for e in p_send + p_drop + r_send + r_drop):
+            return False                     # wait: nothing changes, try again next pass
+
+        check_fits(trade.proposer, proposer_rows, p_send + p_drop, r_send)
+        check_fits(trade.receiver, receiver_rows, r_send + r_drop, p_send)
+    except ValidationError as error:
+        finish(trade, Trade.Status.FAILED, first_error(error))
+        return True
+
+    # 2. Drops first (each goes on waivers), then the sent rows switch teams and go to the bench
+    for e in p_drop + r_drop:
+        e.delete()
+        start_hold(trade.league, e.player, e.nfl_team)
+    for e in p_send:
+        e.team, e.slot = trade.receiver, RosterEntry.Slot.BENCH
+    for e in r_send:
+        e.team, e.slot = trade.proposer, RosterEntry.Slot.BENCH
+    RosterEntry.objects.bulk_update(p_send + r_send, ["team", "slot"])
+
+    # 3. Done, and anything else that counted on these players can't happen now
+    finish(trade, Trade.Status.COMPLETED)
+    fail_conflicts(trade, {(e.player_id, e.nfl_team_id) for e in p_send + p_drop + r_send + r_drop})
+    return True
 
 
 @transaction.atomic
@@ -85,6 +143,37 @@ def close_trade(trade: Trade, status: str) -> None:
     updated = Trade.objects.filter(id=trade.id, status=Trade.Status.PROPOSED).update(status=status, responded_at=timezone.now())
     if updated == 0:
         raise ValidationError({"detail": "This trade isn't waiting for an answer."})
+
+
+def veto_trade(trade: Trade, note: str = "") -> None:
+    """The commissioner cancels a trade during its review. 400 unless it's ACCEPTED."""
+    updated = Trade.objects.filter(id=trade.id, status=Trade.Status.ACCEPTED).update(status=Trade.Status.VETOED, note=note or "Vetoed by the commissioner.",
+                                                                                     processed_at=timezone.now())
+    if updated == 0:
+        raise ValidationError({"detail": "Only a trade in review can be vetoed."})
+
+
+def finish(trade: Trade, status: str, note: str = "") -> None:
+    """Close a trade with this status and note, stamped with processed_at."""
+    trade.status, trade.note, trade.processed_at = status, note, timezone.now()
+    trade.save(update_fields=["status", "note", "processed_at"])
+
+
+def fail_conflicts(trade: Trade, moved: set[tuple]) -> None:
+    """FAIL other open trades in this league that include a player in `moved` ({(player_id, nfl_team_id)}),
+    and pending waiver claims that would drop one of them."""
+    player_ids = {p for p, t in moved if p}
+    team_ids = {t for p, t in moved if t}
+    touching = Q(items__player_id__in=player_ids) | Q(items__nfl_team_id__in=team_ids)
+    others = (Trade.objects.filter(league=trade.league, status__in=[Trade.Status.PROPOSED, Trade.Status.ACCEPTED])
+              .exclude(pk=trade.pk).filter(touching).distinct())
+    Trade.objects.filter(id__in=others.values("pk")).update(
+        status=Trade.Status.FAILED, note="A player in this trade was traded or dropped.", processed_at=timezone.now())
+
+    other_claims = (WaiverClaim.objects.filter(team__league_id=trade.league, status=WaiverClaim.Status.PENDING)
+                    .filter(Q(drop_player_id__in=player_ids) | Q(drop_nfl_team_id__in=team_ids)))
+    other_claims.update(status=WaiverClaim.Status.FAILED, note="The player you chose to drop was traded or dropped.",
+                                              processed_at=timezone.now())
 
 
 def check_fits(team: FantasyTeam, entries: dict[int, RosterEntry], leaving: list[RosterEntry],

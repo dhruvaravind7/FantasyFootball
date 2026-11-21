@@ -215,7 +215,7 @@ class TradeSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Trade
-        fields = ["id", "proposer", "receiver", "status", "note", "items", "created_at", "responded_at", "review_ends_at"]
+        fields = ["id", "proposer", "receiver", "status", "note", "items", "created_at", "responded_at", "review_ends_at", "processed_at"]
 
 
 class ProposeSerializer(serializers.Serializer):

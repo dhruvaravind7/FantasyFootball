@@ -21,7 +21,7 @@ from .scoring import team_week_points
 from .free_agency import add_player, drop_player
 from .waivers import cancel_claim, place_claim
 from .matchups import matchup_scores, standings as league_standings, week_totals
-from .trades import propose_trade, accept_trade, close_trade
+from .trades import PUBLIC_STATUSES, propose_trade, accept_trade, close_trade, veto_trade
 
 TRADE_LOADS = ("items__team", "items__player__team", "items__nfl_team")
 
@@ -246,6 +246,14 @@ class LeagueViewSet(viewsets.ModelViewSet):
         league = self.get_object()
         return Response(StandingSerializer(league_standings(league), many=True).data)
 
+    @action(detail=True)
+    def trades(self, request, pk=None):
+        """GET /leagues/<id>/trades/: the league's public trades (in review, vetoed, completed), newest first."""
+        league = self.get_object()
+        public = (league.trades.filter(status__in=PUBLIC_STATUSES).select_related("proposer", "receiver", "league__season")
+                  .prefetch_related(*TRADE_LOADS))
+        return Response(TradeSerializer(public, many=True).data)
+
 class FantasyTeamViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, mixins.UpdateModelMixin, viewsets.GenericViewSet):
     serializer_class = FantasyTeamSerializer
     permission_classes = [IsAuthenticated, IsOwnerOrCommissioner]
@@ -422,10 +430,13 @@ class TradeViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, viewsets.Ge
     permission_classes = [IsAuthenticated]
 
     def get_queryset(self):
-        """Trades where the user owns either team, or is the league's commissioner."""
+        """Trades where the user owns either team or is the commissioner, plus public trades in the user's leagues."""
         user = self.request.user
-        return (Trade.objects.filter(Q(proposer__owner=user) | Q(receiver__owner=user) | Q(league__commissioner=user))
-                .select_related("proposer", "receiver", "league__season").prefetch_related(*TRADE_LOADS))
+        mine = Q(proposer__owner=user) | Q(receiver__owner=user) | Q(league__commissioner=user)
+        public = Q(league__in=League.objects.filter(teams__owner=user), status__in=PUBLIC_STATUSES)
+
+        return (Trade.objects.filter(mine | public).distinct().select_related("proposer", "receiver", "league__season")
+                .prefetch_related(*TRADE_LOADS))
 
     def require_owner_of(self, team: FantasyTeam) -> None:
         """403 unless the logged-in user owns `team`. The commissioner can't answer for someone else."""
@@ -457,3 +468,12 @@ class TradeViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, viewsets.Ge
         self.require_owner_of(trade.proposer)
         close_trade(trade, Trade.Status.CANCELLED)
         return Response(TradeSerializer(self.get_object()).data)     # re-read: get_object() returns the saved state
+
+    @action(detail=True, methods=["post"])
+    def veto(self, request, pk=None):
+        """POST /trades/<id>/veto/: the commissioner cancels a trade during its review (optional "note")."""
+        trade = self.get_object()
+        if request.user != trade.league.commissioner:
+            raise PermissionDenied("Only the commissioner can veto a trade.")
+        veto_trade(trade, request.data.get("note", ""))
+        return Response(TradeSerializer(self.get_object()).data)
