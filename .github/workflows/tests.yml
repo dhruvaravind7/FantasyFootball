@@ -1,0 +1,61 @@
+# Runs the Django checks and the pytest suite on a fresh Ubuntu machine with its own Postgres.
+name: Tests
+
+on:
+  push:
+    branches: [main]             # every push to main
+  pull_request:
+    branches: [main]             # every PR whose target is main (re-runs on each new commit to the PR)
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    # A Postgres 17 container that lives only as long as this job. Nothing in it is real, so the password is throwaway.
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: ci
+          POSTGRES_PASSWORD: ci-throwaway-password
+          POSTGRES_DB: FantasyFootballDB
+        ports:
+          - 5432:5432            # runner port : container port (nothing else on the runner uses 5432)
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    # What settings.py reads with os.environ[...]. There's no .env on the runner (it's gitignored), so this replaces it.
+    env:
+      DJANGO_SECRET_KEY: ci-only-not-a-real-secret
+      DB_NAME: FantasyFootballDB
+      DB_USER: ci
+      DB_PASSWORD: ci-throwaway-password
+      DB_HOST: localhost
+      DB_PORT: "5432"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.txt
+
+      - name: Install packages
+        run: python -m pip install -r requirements-dev.txt
+
+      - name: Django checks
+        working-directory: fantasyfootball
+        run: |
+          python manage.py check
+          python manage.py makemigrations --check --dry-run
+
+      - name: Run tests
+        working-directory: fantasyfootball
+        run: pytest
