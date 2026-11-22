@@ -94,8 +94,8 @@ def league(nfl):
 def api():
     """api(user) -> an APIClient logged in as that user."""
     def make(user: User) -> APIClient:
-        """A client for `user` (SERVER_NAME must be in ALLOWED_HOSTS)."""
-        client = APIClient(SERVER_NAME="localhost")
+        """A client for `user`. Its default host, "testserver", is the one pytest-django allows (DEBUG is off in tests)."""
+        client = APIClient()
         client.force_authenticate(user)
         return client
     return make
