@@ -29,7 +29,7 @@ jobs:
 
     # What settings.py reads with os.environ[...]. There's no .env on the runner (it's gitignored), so this replaces it.
     env:
-      DJANGO_SECRET_KEY: ci-only-not-a-real-secret
+      DJANGO_SECRET_KEY: ci-only-not-a-real-secret-just-for-test-runs
       DB_NAME: FantasyFootballDB
       DB_USER: ci
       DB_PASSWORD: ci-throwaway-password
