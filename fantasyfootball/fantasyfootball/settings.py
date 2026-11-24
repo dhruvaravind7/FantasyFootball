@@ -149,7 +149,7 @@ REST_FRAMEWORK = {
         "rest_framework_simplejwt.authentication.JWTAuthentication",        # Reads "Authorization: Bearer ..."
         "rest_framework.authentication.SessionAuthentication",         
         ],
-    "DEFAULT_THROTTLE_RATES": {"login": "5/min"},              # 5 tries per minute
+    "DEFAULT_THROTTLE_RATES": {"login": "5/min", "demo": "5/hour"},     # 5 login tries per minute, 5 demos per hour
 }
 
 SIMPLE_JWT = {

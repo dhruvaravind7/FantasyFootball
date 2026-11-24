@@ -3,6 +3,7 @@ import time
 from django.core.management.base import BaseCommand
 
 from fantasy.bot_lineups import pregame_lineups
+from fantasy.demo import delete_old_guests
 from fantasy.draft import poll
 from fantasy.matchups import finalize_due_weeks
 from fantasy.trades import process_due_trades
@@ -39,6 +40,10 @@ class Command(BaseCommand):
                 lineups_changed = pregame_lineups()
                 if lineups_changed > 0:
                     self.stdout.write(f"Set bot lineups ({lineups_changed} changes)")
+
+                guests_deleted = delete_old_guests()
+                if guests_deleted > 0:
+                    self.stdout.write(f"Deleted {guests_deleted} old guest accounts")
 
                 if options["once"]:
                     return

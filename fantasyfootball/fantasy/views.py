@@ -1,8 +1,11 @@
 from rest_framework import status, viewsets, mixins
 from rest_framework.decorators import action
 from rest_framework.exceptions import NotFound, ValidationError, PermissionDenied
-from rest_framework.permissions import IsAuthenticated
+from rest_framework.permissions import IsAuthenticated, AllowAny
 from rest_framework.response import Response
+from rest_framework.throttling import ScopedRateThrottle
+from rest_framework.views import APIView
+from rest_framework_simplejwt.tokens import RefreshToken
 
 from django.db import transaction
 from django.db.models import Q
@@ -16,12 +19,13 @@ from .serializers import (FantasyTeamSerializer, JoinSerializer, LeagueSerialize
                           ScoringRulesSerializer, TeamIdSerializer, UsernameSerializer, DraftPickSerializer, QueueEntrySerializer, ChoiceSerializer,
                           LineupMoveSerializer, MatchupSerializer, StandingSerializer, AddSerializer, DropSerializer, RankingSerializer, ClaimSerializer,
                           TradeSerializer, ProposeSerializer, DropsSerializer, resolve_choice)
-from .draft import make_pick, pause_draft, resume_draft, team_on_clock, undo_last_pick
+from .draft import make_pick, pause_draft, resume_draft, team_on_clock, undo_last_pick, start_draft, run_league
 from .scoring import team_week_points
 from .free_agency import add_player, drop_player
 from .waivers import cancel_claim, place_claim
 from .matchups import matchup_scores, standings as league_standings, week_totals
 from .trades import PUBLIC_STATUSES, propose_trade, accept_trade, close_trade, veto_trade
+from .demo import create_demo
 
 TRADE_LOADS = ("items__team", "items__player__team", "items__nfl_team")
 
@@ -49,6 +53,8 @@ class LeagueViewSet(viewsets.ModelViewSet):
 
     def perform_create(self, serializer):
         """Create the league with the logged-in user as commissioner, in the newest season."""
+        if self.request.user.is_guest:
+            raise PermissionDenied("A guest cannot create a league")
         season = Season.objects.order_by("-year").first()      # the newest season
         serializer.save(commissioner=self.request.user, season=season)
 
@@ -70,6 +76,9 @@ class LeagueViewSet(viewsets.ModelViewSet):
     @action(detail=False, methods=["post"])
     def join(self, request):
         """POST /leagues/join/: join a league with its invite code and a team name."""
+        if request.user.is_guest:
+            raise PermissionDenied("A guest cannot join a league")
+
         serializer = JoinSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         code = serializer.validated_data["invite_code"]
@@ -186,6 +195,16 @@ class LeagueViewSet(viewsets.ModelViewSet):
         serializer.is_valid(raise_exception=True)
         pick = make_pick(league, team, **resolve_choice(serializer.validated_data))
         return Response(DraftPickSerializer(pick).data, status=status.HTTP_201_CREATED)
+
+    @action(detail=True, methods=["post"], url_path="draft/start")
+    def draft_start(self, request, pk=None):
+        """POST /leagues/<id>/draft/start/: the commissioner of a demo league starts its draft now. Bots ahead of them pick at once."""
+        league = self.get_object()
+        if not league.is_demo:
+            raise ValidationError({"detail": "Only a demo league can be started by hand. Set draft_time instead."})
+        start_draft(league)
+        run_league(league)
+        return self.draft(request, pk)                     # the same draft board pause/resume return
 
     @action(detail=True, methods=["post"], url_path="draft/pause")
     def draft_pause(self, request, pk=None):
@@ -477,3 +496,17 @@ class TradeViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, viewsets.Ge
             raise PermissionDenied("Only the commissioner can veto a trade.")
         veto_trade(trade, request.data.get("note", ""))
         return Response(TradeSerializer(self.get_object()).data)
+
+
+class DemoView(APIView):
+    """POST /demo/: anyone (no login) gets a guest account with its own demo league, and that account's tokens."""
+    permission_classes = [AllowAny]
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = "demo"
+
+    def post(self, request):
+        """Create the guest, league and teams, and log the guest in."""
+        guest, league, team = create_demo()
+        refresh = RefreshToken.for_user(guest)
+        return Response({"refresh": str(refresh), "access": str(refresh.access_token), "league_id": league.id, "team_id": team.id},
+                        status=status.HTTP_201_CREATED)

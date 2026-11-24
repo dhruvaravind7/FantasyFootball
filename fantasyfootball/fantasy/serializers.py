@@ -29,8 +29,8 @@ class LeagueSerializer(serializers.ModelSerializer):
         model = League
         fields = ["id", "name", "size", "status", "invite_code", "commissioner",
                   "qb_slots", "rb_slots", "wr_slots", "te_slots", "flex_slots", "dst_slots", "k_slots", "bench_slots",
-                  "teams", "team_name", "draft_time", "pick_seconds", "current_pick", "pick_deadline", "playoff_teams", "trade_deadline"]
-        read_only_fields = ["status", "invite_code", "current_pick", "pick_deadline"]
+                  "teams", "team_name", "draft_time", "pick_seconds", "current_pick", "pick_deadline", "playoff_teams", "trade_deadline", "is_demo"]
+        read_only_fields = ["status", "invite_code", "current_pick", "pick_deadline", "is_demo"]
 
     def validate_size(self, value):
         if value % 2 != 0 or value < 4 or value > 14:

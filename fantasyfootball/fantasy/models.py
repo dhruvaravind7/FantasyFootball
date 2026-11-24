@@ -43,6 +43,7 @@ class League(models.Model):
     last_waiver_run = models.DateTimeField(null=True, blank=True)
     lineups_checked_at = models.DateTimeField(null=True, blank=True)
     trade_deadline = models.PositiveSmallIntegerField(default=12)
+    is_demo = models.BooleanField(default=False)
 
     @property
     def roster_size(self) -> int:
