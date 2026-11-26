@@ -4,6 +4,7 @@ from django.db import transaction
 from rest_framework.exceptions import ValidationError, NotFound
 from league.serializers import PlayerSerializer, TeamSerializer
 
+from .draft import POSITION_LIMITS
 from .models import PLAYOFF_LAST_WEEK, FantasyTeam, League, ScoringRules, RosterEntry, DraftPick, DraftQueueEntry, PlayerRanking, Matchup, WaiverClaim, Trade, TradeItem
 
 class FantasyTeamSerializer(serializers.ModelSerializer):
@@ -20,6 +21,11 @@ class FantasyTeamSerializer(serializers.ModelSerializer):
             raise ValidationError("Another team in this league already has that name.")
         return value
 
+STARTER_SLOT_FIELDS = ["qb_slots", "rb_slots", "wr_slots", "te_slots", "flex_slots", "dst_slots", "k_slots"]
+SLOT_FIELDS = STARTER_SLOT_FIELDS + ["bench_slots"]
+MAX_ROSTER = sum(POSITION_LIMITS.values())       # 29: no team can roster more than the position limits allow
+
+
 class LeagueSerializer(serializers.ModelSerializer):
     commissioner = serializers.CharField(source="commissioner.username", read_only=True)
     teams = FantasyTeamSerializer(many=True, read_only=True)          # many=True: a list of teams
@@ -31,6 +37,8 @@ class LeagueSerializer(serializers.ModelSerializer):
                   "qb_slots", "rb_slots", "wr_slots", "te_slots", "flex_slots", "dst_slots", "k_slots", "bench_slots",
                   "teams", "team_name", "draft_time", "pick_seconds", "current_pick", "pick_deadline", "playoff_teams", "trade_deadline", "is_demo"]
         read_only_fields = ["status", "invite_code", "current_pick", "pick_deadline", "is_demo"]
+        extra_kwargs = {**{field: {"min_value": 0, "max_value": 3} for field in STARTER_SLOT_FIELDS},
+                        "bench_slots": {"min_value": 0, "max_value": 10}}
 
     def validate_size(self, value):
         if value % 2 != 0 or value < 4 or value > 14:
@@ -60,6 +68,13 @@ class LeagueSerializer(serializers.ModelSerializer):
             raise ValidationError({"trade_deadline": f"Must be a regular-season week (1-{last_regular_week})."})
         if playoff_teams > size:
             raise ValidationError({"playoff_teams": f"A {size}-team league can't have {playoff_teams} playoff teams."})
+
+        # The whole roster (starters + bench) must have at least one starter and fit the position limits
+        slots = {f: data.get(f, getattr(self.instance, f) if self.instance else League._meta.get_field(f).default) for f in SLOT_FIELDS}
+        if sum(slots[f] for f in STARTER_SLOT_FIELDS) == 0:
+            raise ValidationError({"detail": "A roster needs at least one starting slot."})
+        if sum(slots.values()) > MAX_ROSTER:
+            raise ValidationError({"detail": f"A roster can have at most {MAX_ROSTER} players (starters + bench)."})
         return data
 
     @transaction.atomic
@@ -136,6 +151,14 @@ class AddSerializer(ChoiceSerializer):
 class DropSerializer(serializers.Serializer):
     """Input for a drop: the roster row to drop."""
     entry_id = serializers.IntegerField(required=True)
+
+class QueueEntryIdSerializer(serializers.Serializer):
+    """Input for queue/remove: which queue entry."""
+    entry_id = serializers.IntegerField()
+
+class ClaimIdSerializer(serializers.Serializer):
+    """Input for claims/cancel: which pending claim."""
+    claim_id = serializers.IntegerField()
 
 class RankingSerializer(serializers.ModelSerializer):
     """One player or D/ST in a league's rankings, as shown in the free-agent list."""

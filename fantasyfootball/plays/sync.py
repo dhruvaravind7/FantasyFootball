@@ -166,6 +166,17 @@ def fingerprint(item: dict) -> str:
     """Same ESPN data gives the same string; any change at all gives a different one."""
     return hashlib.md5(json.dumps(item, sort_keys=True).encode()).hexdigest()
 
+def load_missing_player(athlete_id: str) -> Player:
+    """Create a player ESPN knows but we don't (released or just signed), as a free agent (no team) until sync_nfl places him."""
+    athlete = espn.fetch_athlete(athlete_id)
+    position = athlete["position"]["abbreviation"]
+    if position not in Player.Position.values:
+        raise ESPNFormatError(f"Unknown position {position!r} for athlete {athlete_id}")
+    jersey = athlete.get("jersey")
+    return Player.objects.create(first_name=athlete["firstName"], last_name=athlete["lastName"], position=position,
+                                 jersey_number=int(jersey) if jersey is not None else None, team=None, espn_id=athlete_id)
+
+
 @transaction.atomic
 def sync_game(game: Game) -> dict:
     teams_by_espn_id = {game.home_team.espn_id: game.home_team, game.away_team.espn_id: game.away_team}
@@ -176,13 +187,7 @@ def sync_game(game: Game) -> dict:
     for athlete_id in athlete_ids:
         if athlete_id not in players_by_espn_id:
             # Played in this game but isn't on any current roster (released since), so load them as a free agent
-            athlete = espn.fetch_athlete(athlete_id)
-            position = athlete["position"]["abbreviation"]
-            if position not in Player.Position.values:
-                raise ESPNFormatError(f"Unknown position {position!r} for athlete {athlete_id}")
-            jersey = athlete.get("jersey")
-            players_by_espn_id[athlete_id] = Player.objects.create(first_name=athlete["firstName"], last_name=athlete["lastName"], position=position,
-                                                                    jersey_number=int(jersey) if jersey is not None else None, team=None, espn_id=athlete_id)
+            players_by_espn_id[athlete_id] = load_missing_player(athlete_id)
     
     # What we saved last time, so we only write what ESPN changed since (one query per table)
     drives_by_espn_id = {drive.espn_id: drive for drive in Drive.objects.filter(game=game)}

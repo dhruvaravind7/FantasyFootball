@@ -61,8 +61,12 @@ def draft_position_on_clock(pick: int, teams: int) -> int:
 @transaction.atomic
 def start_draft(league: League) -> None:
     """Fill with bots if needed, shrink the size to fit, pick a random order, rank players, and start the first clock."""
+    league = League.objects.select_for_update().get(pk=league.pk)     # two starts at once: the second waits, then sees DRAFTING
     if league.status != League.Status.SETUP:
         raise ValidationError({"detail": "This league has already drafted."})
+    week = league.season.current_week
+    if week is not None and week > league.regular_season_weeks:
+        raise ValidationError({"detail": f"It's too late in the season to draft (week {week}): there are no regular-season weeks left."})
 
     # 1. Bots: fewer than 4 teams → add bots up to 4. An odd number → add 1 bot. (Even and ≥ 4 → none.)
     teams = list(league.teams.all())

@@ -25,10 +25,19 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 load_dotenv(BASE_DIR.parent / ".env")
 SECRET_KEY = os.environ["DJANGO_SECRET_KEY"]
 
-# SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = True
+# SECURITY WARNING: don't run with debug turned on in production! Off unless .env says DJANGO_DEBUG=True.
+DEBUG = os.environ.get("DJANGO_DEBUG", "False") == "True"
 
-ALLOWED_HOSTS = []
+# Comma-separated host names this server answers to, e.g. "api.example.com"
+ALLOWED_HOSTS = os.environ.get("DJANGO_ALLOWED_HOSTS", "localhost,127.0.0.1").split(",")
+
+# Production behind HTTPS (set DJANGO_HTTPS=True there): redirect http, secure-only cookies, and HSTS
+if os.environ.get("DJANGO_HTTPS") == "True":
+    SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")    # the proxy says the original request was https
+    SECURE_SSL_REDIRECT = True
+    SESSION_COOKIE_SECURE = True
+    CSRF_COOKIE_SECURE = True
+    SECURE_HSTS_SECONDS = 60 * 60 * 24 * 30                            # browsers remember "https only" for 30 days
 
 
 # Application definition
@@ -137,7 +146,7 @@ STATIC_URL = 'static/'
 
 MAILERS = {
     'default': {
-        'BACKEND': 'django.core.mail.backends.console.EmailBackend',
+        'BACKEND': os.environ.get("DJANGO_EMAIL_BACKEND", 'django.core.mail.backends.console.EmailBackend'),   # console = print emails (dev)
     },
 }
 
@@ -147,9 +156,12 @@ REST_FRAMEWORK = {
     "PAGE_SIZE": 50,
     "DEFAULT_AUTHENTICATION_CLASSES": [
         "rest_framework_simplejwt.authentication.JWTAuthentication",        # Reads "Authorization: Bearer ..."
-        "rest_framework.authentication.SessionAuthentication",         
+        "rest_framework.authentication.SessionAuthentication",
         ],
-    "DEFAULT_THROTTLE_RATES": {"login": "5/min", "demo": "5/hour"},     # 5 login tries per minute, 5 demos per hour
+    "DEFAULT_THROTTLE_RATES": {"login": "5/min", "demo": "5/hour", "join": "10/hour"},     # per IP (logged out) or per user (logged in)
+    # How many proxies sit in front of Django. 0 = use the real connection address and IGNORE X-Forwarded-For,
+    # which any caller can fake. Behind one proxy you control (nginx, a load balancer), set DJANGO_NUM_PROXIES=1.
+    "NUM_PROXIES": int(os.environ.get("DJANGO_NUM_PROXIES", "0")),
 }
 
 SIMPLE_JWT = {

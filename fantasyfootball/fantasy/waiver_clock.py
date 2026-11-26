@@ -18,6 +18,12 @@ def start_hold(league: League, player: Player | None = None, nfl_team: Team | No
         league=league, player=player, nfl_team=nfl_team,
         defaults={"clears_at": next_run(timezone.now() + timedelta(days=WAIVER_DAYS))})
 
+def clear_expired_holds(now: datetime | None = None) -> int:
+    """Delete holds that cleared more than a day ago (waiver_clears_at already ignores them). Returns how many."""
+    now = now or timezone.now()
+    deleted, _ = WaiverHold.objects.filter(clears_at__lt=now - timedelta(days=1)).delete()
+    return deleted
+
 def waiver_clears_at(league: League, player: Player | None = None, nfl_team: Team | None = None,
                      now: datetime | None = None) -> datetime | None:
     """When this player/D/ST comes off waivers in `league`, or None if he's a free agent right now."""

@@ -36,20 +36,20 @@ def add_player(team: FantasyTeam, player: Player | None = None, nfl_team: Team |
     if healthy_ir_players:
         raise ValidationError({"detail": f"Move {healthy_ir_players[0]} off IR first; he's healthy."})
 
-    # 2. What's being added: its position, its NFL team (for locks), and who already owns it this week
+    # 2. What's being added: its position, and who already owns it this week
     if player is not None:
         if player.position not in FANTASY_POSITIONS or player.team_id is None:
             raise ValidationError({"player_id": f"{player} can't be added"})
-        position, nfl_team_id = player.position, player.team_id
+        position = player.position
         owned = RosterEntry.objects.filter(league=league, week=week, player=player)
     else:
-        position, nfl_team_id = "DST", nfl_team.id
-        owned = RosterEntry.objects.filter(league=league, week=week, nfl_team=nfl_team)   # YOU: the same filter, for the D/ST
+        position = "DST"
+        owned = RosterEntry.objects.filter(league=league, week=week, nfl_team=nfl_team)
     owner = owned.select_related("team").first()
     if owner is not None:
         raise ValidationError({"detail": f"{owner.team.name} already has him"})
 
-    # 3. Locked? (the added player's game, and the dropped player's game)
+    # 3. Locked? The added player's started game puts him on game-time waivers; the dropped player's game must not have started
     started = started_team_ids(league.season, week)
     if not via_waivers:
         clears = waiver_clears_at(team.league, player, nfl_team, timezone.now())

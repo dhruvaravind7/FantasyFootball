@@ -1,4 +1,5 @@
 from django.contrib.auth.password_validation import validate_password
+from django.core.exceptions import ValidationError as DjangoValidationError
 from rest_framework import serializers
 
 from .models import User
@@ -23,9 +24,13 @@ class RegisterSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError("An account with this email already exists.")
         return value
 
-    def validate_password(self, value):
-        validate_password(value)
-        return value
+    def validate(self, attrs: dict) -> dict:
+        """Run Django's password rules with the new user's email and username, so "too similar" can be checked."""
+        try:
+            validate_password(attrs["password"], user=User(email=attrs.get("email", ""), username=attrs.get("username", "")))
+        except DjangoValidationError as error:
+            raise serializers.ValidationError({"password": list(error.messages)})
+        return attrs
     
     def create(self, validated_data):
         return User.objects.create_user(**validated_data)

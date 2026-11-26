@@ -7,6 +7,7 @@ from fantasy.demo import delete_old_guests
 from fantasy.draft import poll
 from fantasy.matchups import finalize_due_weeks
 from fantasy.trades import process_due_trades
+from fantasy.waiver_clock import clear_expired_holds
 from fantasy.waivers import process_due_waivers
 
 
@@ -44,6 +45,8 @@ class Command(BaseCommand):
                 guests_deleted = delete_old_guests()
                 if guests_deleted > 0:
                     self.stdout.write(f"Deleted {guests_deleted} old guest accounts")
+
+                clear_expired_holds()
 
                 if options["once"]:
                     return

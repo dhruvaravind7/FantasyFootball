@@ -5,7 +5,7 @@ from decimal import Decimal
 from django.db import transaction
 from django.db.models import Q
 
-from plays.sync import fingerprint
+from plays.sync import fingerprint, load_missing_player
 from league import espn
 from league.espn import ESPNFormatError
 from league.models import Game, Season, Team, Player, PlayerGameStats, TeamGameStats
@@ -293,7 +293,7 @@ def sync_box_score(game: Game) -> dict:
             continue
 
         if espn_id not in players:
-            raise ESPNFormatError(f"Box score for {game} has athlete {espn_id}, who isn't in our system")
+            players[espn_id] = load_missing_player(espn_id)    # in the box score but not our players yet: load him, don't pause the game
         stats = {k: v for k, v in line.items() if k != "team"}
         PlayerGameStats.objects.update_or_create(game=game, player=players[espn_id], defaults={"team": teams[line["team"]], "espn_hash": h, **stats})
         written += 1
@@ -345,6 +345,10 @@ def sync_play_stats(game: Game) -> None:
     PlayerGameStats.objects.bulk_update(lines, PLAY_STAT_FIELDS)
 
 
+MIN_INJURY_REPORT = 50      # a real NFL week lists hundreds; fewer means ESPN sent a broken or empty report
+
+
+@transaction.atomic
 def sync_injuries() -> int:
     """Save every listed player's injury status and return date from ESPN's injury report. Anyone not listed is healthy. Returns how many were listed."""
     # 1. {espn id: status} and {espn id: return date}
@@ -358,6 +362,8 @@ def sync_injuries() -> int:
         returns = (injury.get("details") or {}).get("returnDate")
         if returns:
             dates[espn_id] = date.fromisoformat(returns)
+    if len(statuses) < MIN_INJURY_REPORT:
+        raise ESPNFormatError(f"ESPN's injury report lists only {len(statuses)} players; not clearing anyone's injury.")
 
     # 2. Not listed anymore -> healthy: clear BOTH fields (skip players who are already clear)
     Player.objects.exclude(espn_id__in=statuses).exclude(injury_status="", return_date=None).update(injury_status="", return_date=None)

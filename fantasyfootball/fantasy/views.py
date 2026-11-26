@@ -18,7 +18,7 @@ from .lineups import move
 from .serializers import (FantasyTeamSerializer, JoinSerializer, LeagueSerializer, PresetSerializer, RosterEntrySerializer,
                           ScoringRulesSerializer, TeamIdSerializer, UsernameSerializer, DraftPickSerializer, QueueEntrySerializer, ChoiceSerializer,
                           LineupMoveSerializer, MatchupSerializer, StandingSerializer, AddSerializer, DropSerializer, RankingSerializer, ClaimSerializer,
-                          TradeSerializer, ProposeSerializer, DropsSerializer, resolve_choice)
+                          TradeSerializer, ProposeSerializer, DropsSerializer, QueueEntryIdSerializer, ClaimIdSerializer, resolve_choice)
 from .draft import make_pick, pause_draft, resume_draft, team_on_clock, undo_last_pick, start_draft, run_league
 from .scoring import team_week_points
 from .free_agency import add_player, drop_player
@@ -43,6 +43,7 @@ def requested_week(request, season: Season) -> int | None:
 class LeagueViewSet(viewsets.ModelViewSet):
     serializer_class = LeagueSerializer
     permission_classes = [IsAuthenticated, IsCommissionerOrReadOnly]
+    throttle_scope = None            # no rate limit by default; @action(throttle_scope=...) can only set attributes that exist here
     http_method_names = ["get", "post", "patch", "delete", "head", "options"]
 
     def get_queryset(self):
@@ -73,7 +74,7 @@ class LeagueViewSet(viewsets.ModelViewSet):
         self.require_setup(instance, "delete the league")
         instance.delete()
 
-    @action(detail=False, methods=["post"])
+    @action(detail=False, methods=["post"], throttle_classes=[ScopedRateThrottle], throttle_scope="join")
     def join(self, request):
         """POST /leagues/join/: join a league with its invite code and a team name."""
         if request.user.is_guest:
@@ -229,10 +230,11 @@ class LeagueViewSet(viewsets.ModelViewSet):
 
     @action(detail=True, url_path="free-agents", permission_classes=[IsAuthenticated])
     def free_agents(self, request, pk=None):
-        """GET /leagues/<id>/free-agents/?position=: unowned players and D/STs this week, best ranked first (top 50)."""
+        """GET /leagues/<id>/free-agents/?position=: unowned (or, during the draft, undrafted) players and D/STs, best ranked first (top 50)."""
         league = self.get_object()
         week = league.season.current_week
-        owned = RosterEntry.objects.filter(league=league, week=week)
+        # During the draft nobody has roster rows yet, so "taken" means drafted
+        owned = league.picks if league.status == League.Status.DRAFTING else RosterEntry.objects.filter(league=league, week=week)
         owned_players = owned.exclude(player=None).values_list("player_id", flat=True)
         owned_teams = owned.exclude(nfl_team=None).values_list("nfl_team_id", flat=True)
         available = league.rankings.exclude(player_id__in=owned_players).exclude(nfl_team_id__in=owned_teams)
@@ -324,7 +326,9 @@ class FantasyTeamViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, mixin
         """POST /teams/<id>/queue/remove/: take one entry off the team's draft queue."""
         team = self.get_object()
         self.require_owner(team)
-        deleted, _ = team.queue.filter(id=request.data.get("entry_id")).delete()
+        serializer = QueueEntryIdSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        deleted, _ = team.queue.filter(id=serializer.validated_data["entry_id"]).delete()
         if deleted == 0:
             raise NotFound("That entry isn't in your queue")
         return Response(QueueEntrySerializer(team.queue.select_related("player__team", "nfl_team"), many=True).data)
@@ -420,15 +424,19 @@ class FantasyTeamViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, mixin
         """POST /teams/<id>/claims/cancel/: cancel one pending claim, then return the rest."""
         team = self.get_object()
         self.require_owner(team)
-        cancel_claim(team, request.data.get("claim_id"))
+        serializer = ClaimIdSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        cancel_claim(team, serializer.validated_data["claim_id"])
         return self.claims_list(team)
 
     @action(detail=True, methods=["get", "post"])
     def trades(self, request, pk=None):
-        """GET or POST /teams/<id>/trades/: this team's open trades, or propose a new one."""
+        """GET or POST /teams/<id>/trades/: this team's open trades (owner or commissioner), or propose a new one (owner only)."""
         team = self.get_object()
         self.require_owner(team)
         if request.method == "POST":
+            if request.user != team.owner:          # same rule as TradeViewSet: the commissioner can't trade for someone else
+                raise PermissionDenied("Only this team's owner can propose its trades.")
             serializer = ProposeSerializer(data=request.data)
             serializer.is_valid(raise_exception=True)
             data = serializer.validated_data
