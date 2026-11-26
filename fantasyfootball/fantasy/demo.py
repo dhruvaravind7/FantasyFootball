@@ -17,7 +17,7 @@ GUEST_DAYS = 7
 def create_demo() -> tuple[User, League, FantasyTeam]:
     """A new guest account, commissioner of a new 10-team demo league: the guest's team plus 9 bots. The draft waits."""
     # 1. Only during the regular season
-    season = Season.objects.filter(active=True).first()
+    season = Season.objects.order_by("-year").first()          # the newest season, like LeagueViewSet.perform_create
     if season is None or season.current_week is None or season.current_week > PLAYOFF_LAST_WEEK - 2:
         raise ValidationError({"detail": "The demo opens during the NFL regular season."})
 
